@@ -7,12 +7,13 @@ import random
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
-from pokeproxy.cache import cache_pokemon, get_cached_pokemon, make_cache_key
+from pokeproxy.cache import cache_response, get_cached_response, make_cache_key
 from pokeproxy.config import PokemonJSON, Rule, decode_pokemon
 from pokeproxy.rules import match_pokemon
 from pokeproxy.stats import StatsRegistry
@@ -108,6 +109,7 @@ async def _forward_request(
     pokemon: PokemonJSON,
     original_headers: dict[str, str],
     stats: StatsRegistry,
+    cache_key: str,
 ) -> Response:
     json_bytes = pokemon.model_dump_json().encode()
     headers = _build_forward_headers(
@@ -129,10 +131,19 @@ async def _forward_request(
         endpoint_stats.record_request(is_error=resp.status_code >= 400)
 
         request.state.outcome = "forwarded"
+        response_headers = _forwardable_response_headers(resp.headers)
+        await cache_response(
+            request.app.state.redis,
+            cache_key,
+            resp.status_code,
+            response_headers,
+            resp.content,
+            request.app.state.cache_ttl_seconds,
+        )
         return Response(
             content=resp.content,
             status_code=resp.status_code,
-            headers=_forwardable_response_headers(resp.headers),
+            headers=response_headers,
         )
     except httpx.TimeoutException:
         endpoint_stats.record_request(is_error=True)
@@ -164,6 +175,18 @@ def _outcome_response(
     request.state.outcome = outcome
     stats.record_outcome(outcome)
     return JSONResponse(content=content, status_code=status_code)
+
+
+def _duplicate_response(
+    request: Request, stats: StatsRegistry, cached: dict[str, Any]
+) -> Response:
+    request.state.outcome = "duplicate_suppressed"
+    stats.record_outcome("duplicate_suppressed")
+    return Response(
+        content=cached["content"],
+        status_code=cached["status_code"],
+        headers=cached["headers"],
+    )
 
 
 @router.post("/stream")
@@ -206,17 +229,16 @@ async def stream(request: Request) -> Response:
     body_hash = hashlib.sha256(body).hexdigest()
     cache_key = make_cache_key(body_hash)
 
-    cached = await get_cached_pokemon(redis_client, cache_key)
+    cached = await get_cached_response(redis_client, cache_key)
     if cached is not None:
-        pokemon = PokemonJSON(**cached)
-    else:
-        try:
-            pokemon = decode_pokemon(body)
-        except ValueError:
-            return _outcome_response(
-                request, stats, "rejected_protobuf", {"error": "invalid protobuf"}, 400
-            )
-        await cache_pokemon(redis_client, cache_key, pokemon)
+        return _duplicate_response(request, stats, cached)
+
+    try:
+        pokemon = decode_pokemon(body)
+    except ValueError:
+        return _outcome_response(
+            request, stats, "rejected_protobuf", {"error": "invalid protobuf"}, 400
+        )
 
     matched_rule = match_pokemon(pokemon, request.app.state.rules)
 
@@ -229,5 +251,5 @@ async def stream(request: Request) -> Response:
     original_headers: dict[str, str] = dict(request.headers)
 
     return await _forward_request(
-        request, matched_rule, pokemon, original_headers, stats
+        request, matched_rule, pokemon, original_headers, stats, cache_key
     )

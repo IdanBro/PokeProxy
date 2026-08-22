@@ -81,6 +81,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         socket_timeout=settings.redis_socket_timeout_seconds,
     )
     app.state.redis = redis_client
+    app.state.cache_ttl_seconds = settings.cache_ttl_seconds
 
     app.state.ready = True
     logger.info(

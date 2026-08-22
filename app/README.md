@@ -1,6 +1,6 @@
 # PokeProxy
 
-A reverse proxy service that receives Pokemon data streams as protobuf-encoded payloads, validates HMAC signatures, matches against configurable routing rules, and forwards matching Pokemon as JSON to downstream services. It includes a Redis caching layer to avoid re-processing previously seen payloads.
+A reverse proxy service that receives Pokemon data streams as protobuf-encoded payloads, validates HMAC signatures, matches against configurable routing rules, and forwards matching Pokemon as JSON to downstream services. It includes a Redis-backed deduplication layer: an identical payload seen again within the cache TTL replays the original downstream response instead of forwarding a duplicate.
 
 ## How It Works
 
@@ -8,11 +8,14 @@ A reverse proxy service that receives Pokemon data streams as protobuf-encoded p
 [Client] --POST protobuf+HMAC--> [PokeProxy /stream]
                                        |
                                   1. Validate HMAC signature
-                                  2. Check Redis cache
-                                  3. Decode protobuf (on cache miss)
+                                  2. Check Redis cache (keyed on payload hash)
+                                     - hit: replay the cached response, done
+                                     - miss: continue
+                                  3. Decode protobuf
                                   4. Match against routing rules
                                   5. Convert to JSON
                                   6. Forward to downstream
+                                  7. Cache the downstream response
                                        |
                                   [Downstream Service]
 ```
@@ -58,6 +61,7 @@ uv run uvicorn pokeproxy.main:app --host 127.0.0.1 --port 8000
 | `FORWARD_DEADLINE_SECONDS` | No | `10.0` | Wall-clock budget across all forward attempts combined |
 | `REDIS_CONNECT_TIMEOUT_SECONDS` | No | `2.0` | Timeout establishing a connection to Redis |
 | `REDIS_SOCKET_TIMEOUT_SECONDS` | No | `2.0` | Timeout for a single Redis read/write |
+| `CACHE_TTL_SECONDS` | No | `300.0` | How long a downstream response stays cached for deduplication |
 
 ### Rules Config
 
@@ -88,7 +92,7 @@ Rules are loaded from the JSON file specified by `POKEPROXY_CONFIG`.
 | `/stream` | POST | Proxy endpoint — validates, matches, forwards |
 | `/health` | GET | Liveness — is the process responsive |
 | `/ready` | GET | Readiness — has startup finished and are we still serving (503 once shutdown begins) |
-| `/stats` | GET | Per-endpoint metrics, plus a count of terminal outcomes that never reach a downstream endpoint (rejections, no-rule-matched, internal errors) |
+| `/stats` | GET | Per-endpoint metrics, plus a count of terminal outcomes that never reach a downstream endpoint (rejections, no-rule-matched, duplicate suppressions, internal errors) |
 
 ### Logging and request correlation
 
@@ -98,12 +102,15 @@ one access line carrying `request_id`, `method`, `path`, `status`,
 
 `outcome` is the reason a request ended the way it did, and is the field worth
 alerting on — several outcomes share a status code. Current values:
-`forwarded`, `no_rule_matched`, `rejected_signature_missing`,
-`rejected_signature_invalid`, `rejected_protobuf`, `rejected_too_large`,
-`downstream_timeout`, `downstream_error`, `internal_error`.
+`forwarded`, `duplicate_suppressed`, `no_rule_matched`,
+`rejected_signature_missing`, `rejected_signature_invalid`,
+`rejected_protobuf`, `rejected_too_large`, `downstream_timeout`,
+`downstream_error`, `internal_error`.
 
 `no_rule_matched` returns HTTP 200 with an empty body, so it is only
-distinguishable from a successful forward by this field.
+distinguishable from a successful forward by this field. `duplicate_suppressed`
+replays the original downstream response byte-for-byte, so it is only
+distinguishable from a fresh `forwarded` request by this field too.
 
 Requests are correlated with `X-Request-ID`. Supply one and it is echoed back
 and passed downstream; omit it and the proxy generates a UUID4. `/health`,

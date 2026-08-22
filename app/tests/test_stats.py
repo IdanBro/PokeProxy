@@ -116,11 +116,18 @@ def no_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _miss(redis: object, cache_key: str) -> None:
         return None
 
-    async def _store(redis: object, cache_key: str, pokemon: object) -> None:
+    async def _store(
+        redis: object,
+        cache_key: str,
+        status_code: int,
+        headers: dict[str, str],
+        content: bytes,
+        ttl_seconds: float,
+    ) -> None:
         return None
 
-    monkeypatch.setattr("pokeproxy.proxy.get_cached_pokemon", _miss)
-    monkeypatch.setattr("pokeproxy.proxy.cache_pokemon", _store)
+    monkeypatch.setattr("pokeproxy.proxy.get_cached_response", _miss)
+    monkeypatch.setattr("pokeproxy.proxy.cache_response", _store)
 
 
 def _sign(body: bytes) -> str:

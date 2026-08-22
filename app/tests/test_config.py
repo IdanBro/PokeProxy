@@ -121,6 +121,7 @@ def test_boundary_key_is_accepted() -> None:
         ("FORWARD_DEADLINE_SECONDS", "42.0", "forward_deadline_seconds", 42.0),
         ("REDIS_CONNECT_TIMEOUT_SECONDS", "7.5", "redis_connect_timeout_seconds", 7.5),
         ("REDIS_SOCKET_TIMEOUT_SECONDS", "8.5", "redis_socket_timeout_seconds", 8.5),
+        ("CACHE_TTL_SECONDS", "120.0", "cache_ttl_seconds", 120.0),
     ],
 )
 def test_operational_settings_are_configurable_via_env(
@@ -142,6 +143,7 @@ def test_operational_settings_are_configurable_via_env(
         ("FORWARD_DEADLINE_SECONDS", "0"),
         ("REDIS_CONNECT_TIMEOUT_SECONDS", "0"),
         ("REDIS_SOCKET_TIMEOUT_SECONDS", "-1"),
+        ("CACHE_TTL_SECONDS", "0"),
     ],
 )
 def test_operational_settings_reject_non_positive_values(

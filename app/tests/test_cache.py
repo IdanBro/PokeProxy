@@ -6,8 +6,7 @@ import logging
 import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
 
-from pokeproxy.cache import CACHE_TTL, cache_pokemon, get_cached_pokemon, make_cache_key
-from pokeproxy.config import PokemonJSON
+from pokeproxy.cache import cache_response, get_cached_response, make_cache_key
 
 
 class UnavailableRedis:
@@ -38,61 +37,73 @@ class FakeRedis:
         return list(self.store.keys())
 
 
-def _pikachu() -> PokemonJSON:
-    return PokemonJSON(
-        number=25, name="Pikachu", type_one="Electric", type_two="",
-        total=320, hit_points=35, attack=55, defense=40,
-        special_attack=50, special_defense=50, speed=90,
-        generation=1, legendary=False,
-    )
-
-
 async def test_returns_none_on_miss() -> None:
     redis = FakeRedis()
 
-    result = await get_cached_pokemon(redis, "pokeproxy:pokemon:missing")
+    result = await get_cached_response(redis, "pokeproxy:pokemon:missing")
 
     assert result is None
 
 
-async def test_returns_cached_value_on_hit() -> None:
-    pokemon = _pikachu()
+async def test_returns_cached_response_on_hit() -> None:
     key = make_cache_key("abc123")
-    redis = FakeRedis({key: pokemon.model_dump_json()})
+    redis = FakeRedis()
+    await cache_response(redis, key, 200, {"content-type": "application/json"}, b'{"status": "received"}', 300.0)
 
-    result = await get_cached_pokemon(redis, key)
+    result = await get_cached_response(redis, key)
 
-    assert result == json.loads(pokemon.model_dump_json())
+    assert result == {
+        "status_code": 200,
+        "headers": {"content-type": "application/json"},
+        "content": b'{"status": "received"}',
+    }
+
+
+async def test_round_trips_arbitrary_binary_content() -> None:
+    key = make_cache_key("bin")
+    redis = FakeRedis()
+    binary_content = bytes(range(256))
+    await cache_response(redis, key, 200, {}, binary_content, 300.0)
+
+    result = await get_cached_response(redis, key)
+
+    assert result is not None
+    assert result["content"] == binary_content
 
 
 async def test_lookup_never_scans_the_keyspace() -> None:
     key = make_cache_key("target")
-    redis = FakeRedis({key: "{}"})
+    redis = FakeRedis()
+    await cache_response(redis, key, 200, {}, b"{}", 300.0)
 
-    await get_cached_pokemon(redis, key)
+    await get_cached_response(redis, key)
 
     assert redis.keys_calls == 0
 
 
 async def test_lookup_cost_is_independent_of_keyspace_size() -> None:
     key = make_cache_key("target")
-    unrelated = {make_cache_key(str(i)): "{}" for i in range(500)}
-    redis = FakeRedis({**unrelated, key: '{"name": "Mewtwo"}'})
+    redis = FakeRedis({make_cache_key(str(i)): "{}" for i in range(500)})
+    await cache_response(redis, key, 200, {}, b'{"name": "Mewtwo"}', 300.0)
 
-    result = await get_cached_pokemon(redis, key)
+    result = await get_cached_response(redis, key)
 
-    assert result == {"name": "Mewtwo"}
+    assert result is not None
+    assert result["content"] == b'{"name": "Mewtwo"}'
     assert redis.get_calls == 1
 
 
-async def test_cache_pokemon_stores_with_ttl() -> None:
-    pokemon = _pikachu()
+async def test_cache_response_stores_with_the_configured_ttl() -> None:
     key = make_cache_key("abc123")
     redis = FakeRedis()
 
-    await cache_pokemon(redis, key, pokemon)
+    await cache_response(redis, key, 200, {}, b"{}", 42.0)
 
-    assert redis.set_calls == [(key, pokemon.model_dump_json(), CACHE_TTL)]
+    assert len(redis.set_calls) == 1
+    stored_key, stored_value, ex = redis.set_calls[0]
+    assert stored_key == key
+    assert ex == 42
+    assert json.loads(stored_value)["status_code"] == 200
 
 
 def test_make_cache_key_is_namespaced() -> None:
@@ -100,24 +111,24 @@ def test_make_cache_key_is_namespaced() -> None:
 
 
 async def test_lookup_failure_is_treated_as_a_miss() -> None:
-    result = await get_cached_pokemon(UnavailableRedis(), "pokeproxy:pokemon:x")
+    result = await get_cached_response(UnavailableRedis(), "pokeproxy:pokemon:x")
 
     assert result is None
 
 
 async def test_lookup_failure_is_logged(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING, logger="pokeproxy"):
-        await get_cached_pokemon(UnavailableRedis(), "pokeproxy:pokemon:x")
+        await get_cached_response(UnavailableRedis(), "pokeproxy:pokemon:x")
 
     assert "cache lookup failed" in caplog.text
 
 
 async def test_write_failure_does_not_raise() -> None:
-    await cache_pokemon(UnavailableRedis(), make_cache_key("x"), _pikachu())
+    await cache_response(UnavailableRedis(), make_cache_key("x"), 200, {}, b"{}", 300.0)
 
 
 async def test_write_failure_is_logged(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING, logger="pokeproxy"):
-        await cache_pokemon(UnavailableRedis(), make_cache_key("x"), _pikachu())
+        await cache_response(UnavailableRedis(), make_cache_key("x"), 200, {}, b"{}", 300.0)
 
     assert "cache write failed" in caplog.text

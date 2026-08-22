@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     forward_deadline_seconds: float = 10.0
     redis_connect_timeout_seconds: float = 2.0
     redis_socket_timeout_seconds: float = 2.0
+    cache_ttl_seconds: float = 300.0
 
     @field_validator("pokeproxy_hmac_key")
     @classmethod
@@ -76,6 +77,7 @@ class Settings(BaseSettings):
         "forward_deadline_seconds",
         "redis_connect_timeout_seconds",
         "redis_socket_timeout_seconds",
+        "cache_ttl_seconds",
     )
     @classmethod
     def _check_positive_seconds(cls, value: float, info: ValidationInfo) -> float:
