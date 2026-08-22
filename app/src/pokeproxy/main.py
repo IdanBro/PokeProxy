@@ -15,7 +15,7 @@ from pydantic import ValidationError
 
 from pokeproxy.config import Settings
 from pokeproxy.logging_config import setup_logging
-from pokeproxy.proxy import REQUEST_ID_HEADER
+from pokeproxy.proxy import REQUEST_ID_HEADER, RetryPolicy
 from pokeproxy.proxy import router as proxy_router
 from pokeproxy.stats import StatsRegistry
 
@@ -58,6 +58,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         timeout=httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=5.0)
     )
     app.state.http_client = http_client
+    app.state.retry_policy = RetryPolicy(
+        max_attempts=settings.forward_max_attempts,
+        deadline_seconds=settings.forward_deadline_seconds,
+    )
 
     redis_client = aioredis.from_url(settings.redis_url)
     app.state.redis = redis_client

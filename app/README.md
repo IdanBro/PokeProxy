@@ -54,6 +54,8 @@ uv run uvicorn pokeproxy.main:app --host 127.0.0.1 --port 8000
 | `POKEPROXY_PORT` | No | 8000 | Proxy service port |
 | `REDIS_URL` | No | `redis://localhost:6379/0` | Redis connection URL |
 | `LOG_LEVEL` | No | `INFO` | Log level. Output is always JSON on stdout, one object per line |
+| `POKEPROXY_FORWARD_MAX_ATTEMPTS` | No | `3` | Max attempts forwarding to a downstream before giving up |
+| `POKEPROXY_FORWARD_DEADLINE_SECONDS` | No | `10.0` | Wall-clock budget across all forward attempts combined |
 
 ### Rules Config
 

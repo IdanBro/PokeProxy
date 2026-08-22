@@ -54,14 +54,30 @@ class Settings(BaseSettings):
     pokeproxy_port: int = 8000
     redis_url: str = "redis://localhost:6379/0"
     log_level: str = "INFO"
+    forward_max_attempts: int = 3
+    forward_deadline_seconds: float = 10.0
 
     @field_validator("pokeproxy_hmac_key")
     @classmethod
     def _check_hmac_key(cls, raw: str) -> str:
-        # Validate at construction so a bad key fails startup with a named
-        # field, rather than silently producing a worthless HMAC.
         _decode_hmac_key(raw)
         return raw
+
+    @field_validator("forward_max_attempts")
+    @classmethod
+    def _check_forward_max_attempts(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("POKEPROXY_FORWARD_MAX_ATTEMPTS must be at least 1")
+        return value
+
+    @field_validator("forward_deadline_seconds")
+    @classmethod
+    def _check_forward_deadline_seconds(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError(
+                "POKEPROXY_FORWARD_DEADLINE_SECONDS must be greater than 0"
+            )
+        return value
 
     @property
     def hmac_key(self) -> bytes:

@@ -23,8 +23,10 @@ import hmac
 import io
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -103,6 +105,31 @@ def _pikachu() -> bytes:
 
 def _sign(body: bytes) -> str:
     return hmac.new(base64.b64decode(DEV_SECRET_B64), body, hashlib.sha256).hexdigest()
+
+
+def _legendary_pokemon() -> bytes:
+    pokemon = pokemon_pb2.Pokemon()
+    fields = {
+        "number": 150, "name": "Mewtwo", "type_one": "Psychic", "type_two": "",
+        "total": 680, "hit_points": 106, "attack": 110, "defense": 90,
+        "special_attack": 154, "special_defense": 90, "speed": 130,
+        "generation": 1, "legendary": True,
+    }
+    for key, value in fields.items():
+        setattr(pokemon, key, value)
+    return pokemon.SerializeToString()
+
+
+DownstreamHandler = Callable[[httpx.Request], Awaitable[httpx.Response]]
+
+
+@contextmanager
+def _client_with_downstream(handler: DownstreamHandler) -> Iterator[TestClient]:
+    with TestClient(app) as client:
+        client.app.state.http_client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        )
+        yield client
 
 
 # --- formatter ------------------------------------------------------------
@@ -247,6 +274,56 @@ def test_access_line_carries_method_path_and_duration(logs: io.StringIO) -> None
     assert line["method"] == "POST"
     assert line["path"] == "/stream"
     assert isinstance(line["duration_ms"], int | float)
+
+
+def test_forwarded_outcome(logs: io.StringIO, no_cache: None) -> None:
+    async def accept(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": "received"})
+
+    body = _legendary_pokemon()
+    with _client_with_downstream(accept) as client:
+        response = client.post(
+            "/stream", content=body, headers={"X-Grd-Signature": _sign(body)}
+        )
+
+    assert response.status_code == 200
+    assert _access_lines(logs)[0]["outcome"] == "forwarded"
+
+
+def test_downstream_timeout_outcome(
+    logs: io.StringIO, no_cache: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("POKEPROXY_FORWARD_MAX_ATTEMPTS", "1")
+
+    async def always_time_out(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("downstream did not respond", request=request)
+
+    body = _legendary_pokemon()
+    with _client_with_downstream(always_time_out) as client:
+        response = client.post(
+            "/stream", content=body, headers={"X-Grd-Signature": _sign(body)}
+        )
+
+    assert response.status_code == 504
+    assert _access_lines(logs)[0]["outcome"] == "downstream_timeout"
+
+
+def test_downstream_error_outcome(
+    logs: io.StringIO, no_cache: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("POKEPROXY_FORWARD_MAX_ATTEMPTS", "1")
+
+    async def always_refuse(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    body = _legendary_pokemon()
+    with _client_with_downstream(always_refuse) as client:
+        response = client.post(
+            "/stream", content=body, headers={"X-Grd-Signature": _sign(body)}
+        )
+
+    assert response.status_code == 502
+    assert _access_lines(logs)[0]["outcome"] == "downstream_error"
 
 
 def test_secrets_never_appear_in_logs(logs: io.StringIO, no_cache: None) -> None:

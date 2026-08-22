@@ -5,6 +5,8 @@ import hashlib
 import hmac
 import random
 import time
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
 import httpx
 from fastapi import APIRouter, Request, Response
@@ -18,11 +20,16 @@ from pokeproxy.stats import StatsRegistry
 router = APIRouter()
 
 MAX_BODY_SIZE = 1_048_576  # 1 MiB
-
-# Correlation ID. Deliberately the de-facto infrastructure name rather than an
-# X-Grd-* one: ingress controllers and service meshes already inject this, and
-# inventing our own would break the trace at the edge.
 REQUEST_ID_HEADER = "X-Request-ID"
+
+RETRYABLE_ERRORS = (httpx.TimeoutException, httpx.ConnectError)
+
+
+@dataclass(frozen=True)
+class RetryPolicy:
+    max_attempts: int
+    deadline_seconds: float
+
 
 STRIP_HEADERS = frozenset({
     "x-grd-signature",
@@ -59,19 +66,34 @@ def _build_forward_headers(
     return headers
 
 
+def _next_backoff_delay(previous_delay: float, cap: float = 30.0) -> float:
+    return min(previous_delay * 2 * (0.5 + random.random()), cap)  # noqa: S311
+
+
 async def _forward_with_retry(
+    client: httpx.AsyncClient,
+    policy: RetryPolicy,
     url: str,
     content: bytes,
     headers: dict[str, str],
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> httpx.Response:
+    deadline = clock() + policy.deadline_seconds
     delay = 0.1
-    while True:
+
+    for attempt in range(1, policy.max_attempts + 1):
         try:
-            client = httpx.AsyncClient(timeout=600.0)
             return await client.post(url, content=content, headers=headers)
-        except (httpx.TimeoutException, httpx.ConnectError):
-            delay = min(delay * 2 * (0.5 + random.random()), 30.0)  # noqa: S311
-            await asyncio.sleep(delay)
+        except RETRYABLE_ERRORS:
+            attempts_exhausted = attempt == policy.max_attempts
+            deadline_exceeded = clock() >= deadline
+            if attempts_exhausted or deadline_exceeded:
+                raise
+            await sleep(delay)
+            delay = _next_backoff_delay(delay)
+
+    raise AssertionError("unreachable: loop always returns or raises")
 
 
 async def _forward_request(
@@ -90,7 +112,13 @@ async def _forward_request(
     start = time.monotonic()
 
     try:
-        resp = await _forward_with_retry(rule.url, json_bytes, headers)
+        resp = await _forward_with_retry(
+            request.app.state.http_client,
+            request.app.state.retry_policy,
+            rule.url,
+            json_bytes,
+            headers,
+        )
 
         if resp.status_code >= 400:
             endpoint_stats.error_count += 1

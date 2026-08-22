@@ -104,7 +104,11 @@ Approved.
 
 Implement only the issue we just agreed on.
 
+Please write a clean code, no comments, understandable, using SOLID principles. the code should explain itself instead of having comments doing it.
+
 Add or update regression tests where appropriate, run the relevant checks, inspect the final git diff, update WORKLOG.md, and create/update the corresponding docs/issues/ write-up.
+
+Remove any code/tests that are not correlating with the current and new implementation, in order to maintain a small and relevant codebase.
 
 Do not start another issue.
 
@@ -137,6 +141,20 @@ Do not modify anything.
 Rank findings as BLOCKER / SHOULD FIX / NICE TO HAVE. If there is nothing meaningful, say so explicitly.
 ```
 
+### Reusable — Commit changes
+
+```text
+Look at the current git status.
+
+Commit all changes.
+
+Commit message is max 2 sentences. 
+
+Authour is only me. 
+
+Push to current branch.
+```
+
 ### Reusable — Next issue
 
 ```text
@@ -144,7 +162,7 @@ Continue Part 1.
 
 Read the current WORKLOG.md and git state, then pick the next highest-priority unresolved Part 1 issue.
 
-Explain only that issue using our pre-change workflow.
+Explain simply and understandable from high level only that issue using our pre-change workflow.
 
 Do not modify anything until I approve.
 ```
