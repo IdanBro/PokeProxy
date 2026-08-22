@@ -6,7 +6,7 @@ This document is the persistent engineering state for the assignment. I update i
 
 ## Current State
 
-**Current phase:** **Part 2 — Infrastructure & Deployment, steps 1–2 of 10 done.** Design agreed and recorded in `docs/planning/part-02-infrastructure-deployment.md`; the Part 2 section below carries decisions and measured results. Branch `feature/infra-and-deployment`. Part 1 is functionally complete (detail retained below).
+**Current phase:** **Part 2 — Infrastructure & Deployment, steps 1–3 of 10 done.** Design agreed and recorded in `docs/planning/part-02-infrastructure-deployment.md`; the Part 2 section below carries decisions and measured results. Branch `feature/infra-and-deployment`. Part 1 is functionally complete (detail retained below).
 
 **Part 1 (complete) — both final-audit SHOULD FIX findings closed.** R1 (retry attempt-timeout, `docs/issues/012-retry-attempt-timeout.md`) and D1 (consolidated known-gaps write-up, `docs/issues/000-known-gaps.md`) are fixed. 15 issue IDs now fixed across 12 changes, 13 write-ups, **101 tests** passing from `app/` and the repo root, `ruff` clean. R2, R3, R4 (nice to have, from the same audit) and the pre-existing NICE TO HAVE backlog (L1, L2, L5, M6, H6) remain open, tracked in `docs/issues/000-known-gaps.md`. Part 1 is functionally complete; Part 2 not started.
 
@@ -28,7 +28,9 @@ This document is the persistent engineering state for the assignment. I update i
 - **Wave 5 (M7-CWD) — test suite no longer depends on the invoking shell's working directory.** New `app/tests/conftest.py` pins CWD to `app/` via `pytest_configure()`, computed from the test files' own location. Verified from three different working directories (`app/`, repo root, `/tmp`) — 94/94 every time. Write-up: `docs/issues/011-test-suite-cwd-dependence.md`.
 
 **Currently working on:**
-- Part 2, stopped after step 2 (config preflight entrypoint, closing R4 and M6) for review before step 3. R2, R3 and the pre-existing NICE TO HAVE items are open and tracked in `docs/issues/000-known-gaps.md`.
+- Part 2, stopped after step 3 (mock downstream image + `/health`, closing L6) for review before step 4. R2, R3 and the pre-existing NICE TO HAVE items are open and tracked in `docs/issues/000-known-gaps.md`.
+
+**New standing rule (2026-08-23), added to `CLAUDE.md`:** write self-explanatory code with no comments (SOLID where the code has real structure to benefit — not forced onto trivial code); when a change makes existing code or tests obsolete, remove them as part of that change instead of leaving dead weight, scoped to what the current change touches. Applied immediately in step 3 — see below.
 
 **Repository state:** branch `feature/infra-and-deployment`, based on `395479c`. Untracked as of this entry: `app/Dockerfile`, `app/.dockerignore`, `docs/planning/part-02-infrastructure-deployment.md`. Nothing modified, nothing committed.
 
@@ -43,8 +45,8 @@ This document is the persistent engineering state for the assignment. I update i
 **Why M2 deferred rather than fixed:** user's explicit call, consistent with the H5 percentile-removal precedent — this class of protection is also achievable at the ingress/reverse-proxy layer in Part 2 (e.g., an Ingress `client_max_body_size`-equivalent), which is the more standard place production systems put it and rejects before the request even reaches this process. Recorded as a Part 2 addition below (defense-in-depth, not a replacement for the app-level fix, which stays scoped and ready if picked back up first).
 
 **Next:**
-1. Part 2 step 3 — `Dockerfile.mock` + `/health` on `mock_service` (L6), pending review of step 2.
-2. Remaining NICE TO HAVE items (L1, L2, L5, R2, R3) stay tracked in `docs/issues/000-known-gaps.md` and don't block Part 2. H6 closes in step 5, M2's ingress half in step 8.
+1. Part 2 step 4 — Helm chart skeleton (`Chart.yaml`, values, namespace + PSA, ServiceAccounts, `_helpers.tpl`), pending review of step 3.
+2. Remaining NICE TO HAVE items (L1, L2, L5, R2, R3) stay tracked in `docs/issues/000-known-gaps.md` and don't block Part 2. H6's remaining half (rules URLs, config path) closes in step 5; M2's ingress half in step 8.
 
 **R1 — per-attempt HTTP timeout now less than the retry deadline (final audit fix).** `Settings.forward_attempt_timeout_seconds` (`FORWARD_ATTEMPT_TIMEOUT_SECONDS`, default 3.0) replaces the hardcoded `read=10.0`/`write=10.0` in the shared `httpx.AsyncClient`, which previously equalled `FORWARD_DEADLINE_SECONDS` and let one slow attempt consume the whole retry budget. New `Settings.model_validator` rejects `attempt_timeout >= deadline` at startup by name, so the exact bug can't be reintroduced via misconfiguration. `main.py` gained `_build_http_client(settings)` so the client construction is independently testable. Live re-probe against the same black-hole socket used in the audit: **3 of 3 attempts in 9.70s**, was 1 of 3 in 10.17s. New `test_retry_timeout.py` uses a real TCP server (a custom `httpx` transport bypasses timeout enforcement entirely) — surfaced that Python 3.13's `asyncio.Server.wait_closed()` also waits for already-accepted connections' handlers to finish, so the test's hung-server fixture cancels its handler tasks explicitly rather than waiting on them. 7 new tests (94 → 101): 5 in `test_config.py`, 2 in `test_retry_timeout.py`. `ruff check .` clean. Full detail in `docs/issues/012-retry-attempt-timeout.md`.
 
@@ -317,6 +319,23 @@ Verified by execution:
 | JSON logging through the new path | uvicorn's own lines still JSON — no regression from `log_config=None` |
 
 No change to `main.py`, `proxy.py`, `config.py`, or any request-path code — entrypoint-only.
+
+**Step 3 (mock downstream image) — done 2026-08-23.** New `app/Dockerfile.mock`, closing **L6**. Deliberately doesn't reuse `app/uv.lock` — the shared lockfile drags in `httpx`, `protobuf`, `redis`, `pydantic-settings`, none of which the mock uses — instead pins `fastapi==0.135.1` / `uvicorn[standard]==0.41.0` directly to the versions already resolved there, so the two images can't drift on framework version without it being a deliberate bump. `PYTHONPATH=/app` makes `mock_service.main:app` importable without packaging it into a wheel, which is the actual L6 decision (separate image, source copied in, not installed).
+
+`mock_service/main.py` gained `GET /health` (plain liveness — no dependencies to gate on). **Applied the new code-style rule immediately:** deleted the `if __name__ == "__main__": uvicorn.run(app, host="127.0.0.1", ...)` block — unexercised (the documented run path is always the `uvicorn` CLI) and its `127.0.0.1` bind was literally the H6 backlog's `mock_service/main.py:34` citation. Superseded by the current change, removed as part of it rather than left behind.
+
+Verified by execution:
+
+| Check | Result |
+|---|---|
+| Build | 16.8s cold |
+| Image size | **236 MB** |
+| Runtime user | `uid=10001(mockdownstream)` |
+| `--read-only --cap-drop ALL --security-opt no-new-privileges` | Serves normally; `docker diff` shows **zero writes** |
+| Bind | `0.0.0.0:8001`, confirmed via the published port |
+| `GET /health` | `{"status":"alive"}`, 200 |
+| `POST /pokemon` → `GET /received` | Body and `X-Grd-Reason` both land correctly |
+| `ruff check .` / `pytest -q` | Clean / **106 passed** — no regression; `mock_service` was and remains outside pytest coverage (a test double testing a test double is circular) |
 
 ---
 

@@ -81,6 +81,14 @@ I need to understand every important decision. When alternatives are meaningful,
 For major decisions, help me answer:
 > If Guardio asks why we chose this instead of X, what should I say?
 
+## Code style
+
+Write clean, self-explanatory code: no comments. Naming, structure, and small well-named functions carry the explanation instead of prose. Apply SOLID principles where the code has real structure to benefit from them — not forced onto trivial code.
+
+If something is genuinely non-obvious (a workaround for a specific library bug, a subtle invariant), a single short comment is still fine. The rule is against narrating design decisions in comments, not an absolute zero-comment policy. Reasoning belongs in commit messages, `docs/issues/*.md`, and `WORKLOG.md` instead.
+
+When a change makes existing code or tests obsolete, remove them as part of that change rather than leaving dead weight — the codebase should stay small and relevant to what's actually implemented. This is scoped to what the current change touches or supersedes, not a license for unrelated cleanup sweeps; those still need a proposal and my approval like anything else in "Working mode."
+
 ## Documentation
 
 `WORKLOG.md` is the persistent project state between Claude sessions.

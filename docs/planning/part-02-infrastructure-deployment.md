@@ -66,7 +66,7 @@ The general rule "don't hand-roll infrastructure" is right, and for anything sta
 |---|---|---|
 | 1 | `app/Dockerfile` + `.dockerignore`; build and verify standalone | **Done** |
 | 2 | `src/pokeproxy/__main__.py` config preflight (R4 + M6) | **Done** |
-| 3 | `Dockerfile.mock` + `/health` on `mock_service` (L6) | Not started |
+| 3 | `Dockerfile.mock` + `/health` on `mock_service` (L6) | **Done** |
 | 4 | Helm chart skeleton: `Chart.yaml`, values, namespace + PSA, ServiceAccounts | Not started |
 | 5 | Workload templates: redis, mock, pokeproxy — probes, resources, securityContext, `checksum/config`, rules via `toJson` (H6, H7) | Not started |
 | 6 | k3d cluster definition, `k3d image import`, first `helm upgrade --install` | Not started |
@@ -165,3 +165,24 @@ Verified by execution, not asserted:
 | JSON logging through the new path | uvicorn's own startup lines still render as JSON objects — `log_config=None` did not regress step 1's logging behavior |
 
 No change to `app/src/pokeproxy/main.py`, `proxy.py`, `config.py`, or any other request-path code — this step is entrypoint-only.
+
+## Step 3 — result
+
+New `app/Dockerfile.mock`, closing L6. Deliberately does not reuse `app/pyproject.toml`/`uv.lock` — `uv sync` against the shared lockfile would pull in `httpx`, `protobuf`, `redis[hiredis]` and `pydantic-settings`, none of which the mock service uses. Instead the builder stage creates a bare venv and `uv pip install`s `fastapi==0.135.1` and `uvicorn[standard]==0.41.0`, pinned to the exact versions already resolved in `uv.lock` so the two images can't silently drift apart on the framework version. Same non-root/read-only pattern as the primary image: `USER 10001:10001`, no `HEALTHCHECK` (kubelet's job).
+
+`mock_service` isn't (and still isn't) packaged into a wheel — `PYTHONPATH=/app` in the runtime stage is what makes `mock_service.main:app` importable by uvicorn without one, which is the actual containerization decision L6 was asking for. Making it a proper installable package was the other option on the table; rejected as unnecessary ceremony for a container that only ever runs `uvicorn mock_service.main:app`.
+
+`mock_service/main.py` gained `GET /health` — the "Redis does not gate readiness" probe design (M1) has nothing to check for a service with no dependencies, so this is a plain liveness endpoint. The `if __name__ == "__main__":` block (`uvicorn.run(app, host="127.0.0.1", ...)`) was deleted: the documented run path is always the `uvicorn` CLI (`app/README.md`'s Quick Start, and now `Dockerfile.mock`'s `CMD`), so the block was unexercised dead code, and its `127.0.0.1` bind was literally the localhost-assumption `main.py:34` reference in the H6 backlog row — worth removing rather than leaving as a second, unused, wrong-for-containers entrypoint. Per the standing code-style rule in `CLAUDE.md`, code superseded by the current change is removed as part of it rather than left behind.
+
+Verified by execution:
+
+| Check | Result |
+|---|---|
+| Build (cold) | 16.8s |
+| Image size | **236 MB** |
+| Runtime user | `uid=10001(mockdownstream) gid=10001(mockdownstream)` |
+| `--read-only --cap-drop ALL --security-opt no-new-privileges` | Serves normally; `docker diff` shows **zero filesystem writes** |
+| Bind address | `Uvicorn running on http://0.0.0.0:8001` — confirmed reachable via published port, not just loopback |
+| `GET /health` | `{"status":"alive"}`, 200 |
+| `POST /pokemon` → `GET /received` round-trip | Posted body and `X-Grd-Reason` header both land correctly in `/received` |
+| `ruff check .` / `pytest -q` | Clean / **106 passed** — `mock_service` isn't pytest-covered (a test double testing a test double is circular), so this confirms no regression elsewhere, not new coverage |
