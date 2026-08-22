@@ -31,17 +31,19 @@ class RetryPolicy:
     deadline_seconds: float
 
 
-STRIP_HEADERS = frozenset({
-    "x-grd-signature",
-    "content-type",
-    "content-length",
-    "host",
+ALLOWED_FORWARD_HEADERS: frozenset[str] = frozenset()
+
+HOP_BY_HOP_RESPONSE_HEADERS = frozenset({
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
     "transfer-encoding",
-    "authorization",
-    "cookie",
-    "x-forwarded-for",
-    "x-forwarded-host",
-    "x-forwarded-proto",
+    "upgrade",
+    "content-length",
+    "content-encoding",
 })
 
 
@@ -56,14 +58,18 @@ def _build_forward_headers(
     headers: dict[str, str] = {
         k: v
         for k, v in original_headers.items()
-        if k.lower() not in STRIP_HEADERS
+        if k.lower() in ALLOWED_FORWARD_HEADERS
     }
     headers["Content-Type"] = "application/json"
     headers["X-Grd-Reason"] = reason
-    # Set explicitly: the client may not have sent one, in which case we
-    # generated it and downstream would otherwise never see it.
     headers[REQUEST_ID_HEADER] = request_id
     return headers
+
+
+def _forwardable_response_headers(headers: httpx.Headers) -> dict[str, str]:
+    return {
+        k: v for k, v in headers.items() if k.lower() not in HOP_BY_HOP_RESPONSE_HEADERS
+    }
 
 
 def _next_backoff_delay(previous_delay: float, cap: float = 30.0) -> float:
@@ -129,7 +135,7 @@ async def _forward_request(
         return Response(
             content=resp.content,
             status_code=resp.status_code,
-            headers=dict(resp.headers),
+            headers=_forwardable_response_headers(resp.headers),
         )
     except httpx.TimeoutException:
         endpoint_stats.error_count += 1
