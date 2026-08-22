@@ -28,7 +28,7 @@ setup_logging()
 logger = logging.getLogger("pokeproxy")
 
 # kubelet polls these continuously; access lines for them would bury real traffic.
-_UNLOGGED_PATHS = frozenset({"/health", "/stats"})
+_UNLOGGED_PATHS = frozenset({"/health", "/ready", "/stats"})
 
 
 def _load_settings() -> Settings:
@@ -82,6 +82,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     )
     app.state.redis = redis_client
 
+    app.state.ready = True
     logger.info(
         "startup complete",
         extra={
@@ -92,6 +93,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
     yield
 
+    app.state.ready = False
     logger.info("shutdown started")
     await redis_client.aclose()
     await http_client.aclose()
@@ -167,6 +169,13 @@ app.include_router(proxy_router)
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "alive"}
+
+
+@app.get("/ready")
+async def ready(request: Request) -> JSONResponse:
+    if request.app.state.ready:
+        return JSONResponse(content={"status": "ready"})
+    return JSONResponse(content={"status": "not ready"}, status_code=503)
 
 
 @app.get("/stats")

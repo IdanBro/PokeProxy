@@ -86,7 +86,8 @@ Rules are loaded from the JSON file specified by `POKEPROXY_CONFIG`.
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/stream` | POST | Proxy endpoint — validates, matches, forwards |
-| `/health` | GET | Health check |
+| `/health` | GET | Liveness — is the process responsive |
+| `/ready` | GET | Readiness — has startup finished and are we still serving (503 once shutdown begins) |
 | `/stats` | GET | Per-endpoint metrics |
 
 ### Logging and request correlation
@@ -105,8 +106,8 @@ alerting on — several outcomes share a status code. Current values:
 distinguishable from a successful forward by this field.
 
 Requests are correlated with `X-Request-ID`. Supply one and it is echoed back
-and passed downstream; omit it and the proxy generates a UUID4. `/health` and
-`/stats` are not access-logged.
+and passed downstream; omit it and the proxy generates a UUID4. `/health`,
+`/ready` and `/stats` are not access-logged.
 
 ## Load Generator
 

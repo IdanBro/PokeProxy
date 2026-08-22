@@ -202,6 +202,13 @@ def test_health_is_not_access_logged(logs: io.StringIO) -> None:
     assert _access_lines(logs) == []
 
 
+def test_ready_is_not_access_logged(logs: io.StringIO) -> None:
+    with TestClient(app) as client:
+        assert client.get("/ready").status_code == 200
+
+    assert _access_lines(logs) == []
+
+
 # --- outcomes -------------------------------------------------------------
 
 

@@ -6,7 +6,7 @@ This document is the persistent engineering state for the assignment. I update i
 
 ## Current State
 
-**Current phase:** Part 1 — Wave 3 done. C1, C5, C2, C3, C4, H1 fixed. Wave 4 is next.
+**Current phase:** Part 1 — Wave 3 done, Wave 4 in progress. C1, C5, C2, C3, C4, H1, M1+H7 fixed.
 
 **Completed:**
 - Read-only review of `app/`: source, config, tests, mock service, load generator.
@@ -19,19 +19,20 @@ This document is the persistent engineering state for the assignment. I update i
 - **Wave 3, part 2 (C3) — cache lookup is a single `GET`, not a keyspace scan.** Write-up: `docs/issues/004-cache-keyspace-scan.md`.
 - **Wave 3, part 3 (C4) — Redis calls guarded, client-level timeouts.** Write-up: `docs/issues/005-unguarded-redis-calls.md`.
 - **Wave 3, part 4 (H1) — rules loaded and validated once at startup, not per request.** Write-up: `docs/issues/006-rules-reloaded-per-request.md`.
+- **Wave 4, part 1 (M1 + H7) — real `/ready` endpoint split from `/health`, flipped false at the start of shutdown.** Write-up: `docs/issues/007-liveness-readiness-split.md`.
 
 **Currently working on:**
-- Nothing in flight. H1 is complete and verified; awaiting go-ahead for Wave 4. **Wave 3 is now fully done** — C2, C3, C4, H1 all fixed.
+- Nothing in flight. M1+H7 is complete and verified; awaiting go-ahead for the next Wave 4 pair (H2 + H3).
 
-**Repository state:** branch `feature/repo-review` tracking `origin`. Commits through C4 pushed (`0f4ec65`). H1 uncommitted.
+**Repository state:** branch `feature/repo-review` tracking `origin`. Commits through H1 pushed (`5d37e7e`). M1+H7 uncommitted.
 
 **Next:**
-1. Wave 4: M1 + H7 (health/readiness split, graceful shutdown), then H2 + H3 (header hygiene), then H4 + H5 (stats accounting).
+1. Wave 4: H2 + H3 (header hygiene), then H4 + H5 (stats accounting).
 
 **C4 closed both deferred test-isolation reasons from C5.** `no_cache` in `test_logging.py` is no longer load-bearing for correctness (a Redis-down request now degrades instead of 500ing) — kept anyway for test speed and to keep unit tests off real network calls. Confirmed by a real end-to-end run with no mocking: unreachable Redis produced two `WARNING` log lines and a clean `502 downstream_error` in 727.8ms, not a crash.
 
 **Verified baselines** (measured in WSL, not assumed):
-- Test suite: **62 passed** from `app/` (5 → 16 after C1 → 28 after C5 → 38 after C2 → 44 after C3 → 48 after C4 → 56 after the C2/C4 config-naming follow-up → 62 after H1).
+- Test suite: **67 passed** from `app/` (5 → 16 after C1 → 28 after C5 → 38 after C2 → 44 after C3 → 48 after C4 → 56 after the C2/C4 config-naming follow-up → 62 after H1 → 67 after M1+H7).
 - Tests are CWD-dependent — from the repo root, 3 fail with `FileNotFoundError: 'config/rules.json'`. Confirms M7; fix it there.
 - `ruff check .` passes across the project today, so L5 is a *missing gate*, not a backlog of violations.
 - `aioredis.from_url` is **lazy**: the app starts fine with nothing listening on 6379. Input to C4 and M1.
@@ -112,8 +113,8 @@ Wave numbering matches the order of work in `docs/planning/part-01-production-ha
 | C3 | Critical | `redis.keys("pokeproxy:pokemon:*")` on every request, then a Python-side linear scan to find the key a single `GET` would have returned. | `cache.py:18` | 3 | **Fixed** — `docs/issues/004-cache-keyspace-scan.md`. |
 | C4 | Critical | Redis calls unguarded, no socket or connect timeouts. A Redis blip becomes a 500 on 100% of traffic; a hung Redis blocks indefinitely. Both halves reproduced: connection-refused and a raw TCP server that accepts and never responds. | `proxy.py:142,153`, `main.py:29` | 3 | **Fixed** — `docs/issues/005-unguarded-redis-calls.md`. |
 | H1 | High | `rules.json` re-read, re-parsed and re-validated from disk on every request, synchronously, on the event loop. Config errors surface at request time instead of startup. | `proxy.py:207` (pre-fix), `rules.py:110-135` | 3 | **Fixed** — `docs/issues/006-rules-reloaded-per-request.md` |
-| M1 | Medium | `/health` is a hardcoded string. No readiness concept. | `main.py:42-44` | 4 | Open |
-| H7 | High | No graceful shutdown and no readiness flip on SIGTERM. Every rollout drops in-flight requests. | `main.py:16-35` | 4 | Open |
+| M1 | Medium | `/health` is a hardcoded string. No readiness concept. | `main.py:167-169` (pre-fix) | 4 | **Fixed** — `docs/issues/007-liveness-readiness-split.md` |
+| H7 | High | No graceful shutdown and no readiness flip on SIGTERM. Every rollout drops in-flight requests. | `main.py:60-98` (pre-fix) | 4 | **Fixed (app-side half)** — `docs/issues/007-liveness-readiness-split.md`. K8s-side `preStop`/grace-period wiring is Part 2 |
 | H2 | High | Downstream response headers copied verbatim to the client, including framing and hop-by-hop headers. | `proxy.py:89-93` | 4 | Open |
 | H3 | High | Client headers forwarded downstream on a denylist basis. Denylists are always incomplete. | `proxy.py:41-51,22-33` | 4 | Open |
 | H4 | High | `request_count` only increments on success while `error_count` increments on failure, so `error_rate` reads 0.0 during a total outage. `bytes_received` is assigned rather than accumulated. Rejections and no-rule-matched are never counted. | `stats.py:29`, `proxy.py:87,95,101,162` | 4 | Open |
@@ -159,6 +160,12 @@ All four operational settings (`forward_max_attempts`, `forward_deadline_seconds
 **H1 — rules loaded once at startup (Wave 3).** `main.py` gains `_load_rules(config_path)`, mirroring `_load_settings`: calls `load_rules`, and on `OSError`/`ValueError` (missing file, malformed JSON, or any of `load_rules`'s own validation errors) logs one `CRITICAL` line and `raise SystemExit(1)` instead of letting the app start with a config it can't use. `lifespan()` calls it once and stores the result on `app.state.rules`, replacing `app.state.config_path`. `proxy.py` no longer imports or calls `load_rules` — `stream()` reads `request.app.state.rules` directly.
 
 Verified: 6 new tests (`test_startup.py`, 56 → 62) — `app.state.rules` populated at startup; `load_rules` patched and counted across 3 requests through `TestClient`, confirming exactly one call; invalid rule / malformed JSON / missing file each raise `SystemExit`; the failure logs at `CRITICAL` naming the reason. `ruff check .` clean. Full detail in `docs/issues/006-rules-reloaded-per-request.md`.
+
+**M1 + H7 — liveness/readiness split (Wave 4).** `/health` is unchanged — cheap, always trivially true. New `GET /ready` reads `app.state.ready`, a bool set `True` at the end of `lifespan`'s startup section and `False` as the first line after `yield` resumes, before the Redis/HTTP client cleanup runs. Returns 503 when false. Deliberately does not probe Redis — a Redis blip must not un-ready every pod at once, matching the readiness decision already recorded in `docs/planning/part-01-production-hardening.md`. `/ready` joins `/health`/`/stats` in `_UNLOGGED_PATHS`. Naming considered and rejected the `/healthz`+`/readyz` convention in favor of keeping the existing documented `/health` and adding `/ready` — smaller diff, no rename risk.
+
+This is the app-side half only. The K8s-side `preStop`/`terminationGracePeriodSeconds` wiring that gives the flip time to actually stop traffic before `SIGTERM` is Part 2 (Backlog).
+
+Verified: 5 new tests (`test_readiness.py` ×4, one in `test_logging.py`; 62 → 67) — `/ready` is 200 after startup, 503 when forced not-ready, `app.state.ready` is false after the app's lifespan shutdown runs, `/health` is unaffected by readiness state, `/ready` produces no access line. `ruff check .` clean. Full detail in `docs/issues/007-liveness-readiness-split.md`.
 
 **C5 — structured logging (Wave 2).** stdlib `logging` plus a JSON formatter in a new `logging_config.py`; no new dependency, and one setup unifies uvicorn's own output instead of leaving it plaintext alongside ours. Uvicorn's access log is replaced by our own middleware line because it cannot carry a correlation ID, latency or outcome. Correlation via `X-Request-ID` — deliberately the infrastructure convention rather than an `X-Grd-*` name, so the trace survives the ingress. Handlers label `request.state.outcome`; the middleware is the single place that reads it and emits one access line. Unhandled exceptions become a JSON 500 carrying the request ID rather than a raw ASGI traceback. Also folded in the C1 leftover: bad config is now one CRITICAL line.
 
