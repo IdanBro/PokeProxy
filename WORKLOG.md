@@ -6,7 +6,7 @@ This document is the persistent engineering state for the assignment. I update i
 
 ## Current State
 
-**Current phase:** Part 1 — every audit SHOULD FIX item is now closed (fixed or deliberately deferred). C1, C5, C2, C3, C4, H1, M1+H7, H2+H3, H4+H5, M4, M7-CWD fixed. **L3 and M2 reviewed and deliberately deferred** (below) rather than fixed. Remaining: one explicit re-deferral pass over the NICE TO HAVE backlog (L1, L2, L5, M6, H6), then Part 1 is done.
+**Current phase:** Part 1 — **both final-audit SHOULD FIX findings closed.** R1 (retry attempt-timeout, `docs/issues/012-retry-attempt-timeout.md`) and D1 (consolidated known-gaps write-up, `docs/issues/000-known-gaps.md`) are fixed. 15 issue IDs now fixed across 12 changes, 13 write-ups, **101 tests** passing from `app/` and the repo root, `ruff` clean. R2, R3, R4 (nice to have, from the same audit) and the pre-existing NICE TO HAVE backlog (L1, L2, L5, M6, H6) remain open, tracked in `docs/issues/000-known-gaps.md`. Part 1 is functionally complete; Part 2 not started.
 
 **Completed:**
 - Read-only review of `app/`: source, config, tests, mock service, load generator.
@@ -26,9 +26,9 @@ This document is the persistent engineering state for the assignment. I update i
 - **Wave 5 (M7-CWD) — test suite no longer depends on the invoking shell's working directory.** New `app/tests/conftest.py` pins CWD to `app/` via `pytest_configure()`, computed from the test files' own location. Verified from three different working directories (`app/`, repo root, `/tmp`) — 94/94 every time. Write-up: `docs/issues/011-test-suite-cwd-dependence.md`.
 
 **Currently working on:**
-- Nothing in flight. M7-CWD complete and verified — every audit SHOULD FIX item is now either fixed (H4+H5, M4, M7-CWD) or deliberately deferred with reasoning (L3, M2). Only the final NICE TO HAVE re-deferral pass (L1, L2, L5, M6, H6) stands between here and declaring Part 1 done.
+- Nothing in flight. R1 and D1 fixed (see Decisions and changes below). R2, R3, R4 and the pre-existing NICE TO HAVE items are open and tracked in `docs/issues/000-known-gaps.md` rather than repeated here.
 
-**Repository state:** branch `feature/repo-review` tracking `origin`. Commits through M4 pushed (`a9eaf9a`). M7-CWD uncommitted.
+**Repository state:** branch `feature/repo-review`. R1 + D1 changes uncommitted as of this entry.
 
 **L3 — deliberately deferred, not missed (decided 2026-08-22).** Error responses (`{"error": "downstream error"}`, etc.) carry no `request_id`, unlike `main.py`'s own `internal_error` handler, which does — inconsistent, and exactly the "useful error messages" gap the assignment names. Root cause and fix were fully scoped in a pre-change review: inject `request.state.request_id` into the content dict at the 6 real error call sites already funneled through `proxy.py`'s `_outcome_response()` helper (built during H4) plus the 2 `JSONResponse` literals in `_forward_request`'s except blocks; `no_rule_matched`'s `{}` body stays untouched since it isn't an error. A related, separately-decidable question was also raised and left open: `rejected_signature_missing` and `rejected_signature_invalid` currently return identical body text (`"invalid signature"`) despite being distinguishable outcomes in the logs.
 
@@ -39,7 +39,11 @@ This document is the persistent engineering state for the assignment. I update i
 **Why M2 deferred rather than fixed:** user's explicit call, consistent with the H5 percentile-removal precedent — this class of protection is also achievable at the ingress/reverse-proxy layer in Part 2 (e.g., an Ingress `client_max_body_size`-equivalent), which is the more standard place production systems put it and rejects before the request even reaches this process. Recorded as a Part 2 addition below (defense-in-depth, not a replacement for the app-level fix, which stays scoped and ready if picked back up first).
 
 **Next:**
-1. Explicitly re-defer every remaining NICE TO HAVE (L1, L2, L5, M6, H6) with reasoning — same treatment L3/M2 already got — then declare Part 1 done and move to Part 2.
+1. Part 1 is functionally complete. Move to Part 2 (Infrastructure & Deployment) — Dockerfile, K8s manifests, Redis. The remaining NICE TO HAVE items (L1, L2, L5, M6, H6, R2, R3, R4) stay tracked in `docs/issues/000-known-gaps.md` and don't block Part 2.
+
+**R1 — per-attempt HTTP timeout now less than the retry deadline (final audit fix).** `Settings.forward_attempt_timeout_seconds` (`FORWARD_ATTEMPT_TIMEOUT_SECONDS`, default 3.0) replaces the hardcoded `read=10.0`/`write=10.0` in the shared `httpx.AsyncClient`, which previously equalled `FORWARD_DEADLINE_SECONDS` and let one slow attempt consume the whole retry budget. New `Settings.model_validator` rejects `attempt_timeout >= deadline` at startup by name, so the exact bug can't be reintroduced via misconfiguration. `main.py` gained `_build_http_client(settings)` so the client construction is independently testable. Live re-probe against the same black-hole socket used in the audit: **3 of 3 attempts in 9.70s**, was 1 of 3 in 10.17s. New `test_retry_timeout.py` uses a real TCP server (a custom `httpx` transport bypasses timeout enforcement entirely) — surfaced that Python 3.13's `asyncio.Server.wait_closed()` also waits for already-accepted connections' handlers to finish, so the test's hung-server fixture cancels its handler tasks explicitly rather than waiting on them. 7 new tests (94 → 101): 5 in `test_config.py`, 2 in `test_retry_timeout.py`. `ruff check .` clean. Full detail in `docs/issues/012-retry-attempt-timeout.md`.
+
+**D1 — consolidated known-gaps write-up (final audit fix).** New `docs/issues/000-known-gaps.md` covers the 11 found-but-unfixed issue IDs (H6, M2, L6, M5, L4, L5, M3, L1, L2, M6, plus the M2/L3 "deliberately deferred" reasoning already on record) in one document, grouped by disposition (deferred to a later Part / scoped-but-not-implemented / needs a protocol decision / low priority), plus R2/R3/R4 from the same audit pass. No code change — this closes the gap where `docs/issues/` only recorded what was fixed, not what was found and consciously left alone, which the assignment's deliverable 2 asks for either way.
 
 **Part 1 completion audit (2026-08-22):** Full requirement-by-requirement pass against `README_HOME_ASSIGNMENT.md` Part 1 and this doc's own "Definition of done" (`docs/planning/part-01-production-hardening.md`). Verification run: `ruff check .` clean, `pytest -q` from `app/` — **73 passed**; from repo root — 25 fail (CWD-dependence, see Verified baselines).
 
@@ -55,6 +59,35 @@ This document is the persistent engineering state for the assignment. I update i
 *Deliberately deferred, with reasoning already on record — no gap:* K8s-side of graceful shutdown (H7, Backlog/Part 2), rules ConfigMap live-reload (H1 consequence, Backlog/Part 2), H6 config-assumes-localhost (fundamentally a Part 2 deployment-topology decision), M3 replay protection (documented-only, protocol change), M5 `/stats` auth (Backlog/Part 4), L4 unbounded label cardinality (Backlog/Part 4), L6 `mock_service` packaging (Backlog/Part 2), L5 ruff-in-CI (natural Part 3 fit), **L3 useful error messages** (reviewed, root-caused, fix scoped, deprioritized below Medium-severity work — see "L3 — deliberately deferred, not missed"), **M2 body size limit doesn't actually limit** (reviewed, root-caused, fix scoped, also achievable at the Part 2 ingress layer — see "M2 — deliberately deferred, not missed").
 
 Full findings, severity, and reasoning: see the response given alongside this audit (not persisted verbatim here — token economy).
+
+**Part 1 FINAL completion audit (2026-08-22, second pass).** Requirement-by-requirement re-read of `README_HOME_ASSIGNMENT.md` Part 1 against the tree at `e6e1e14`. No code changed.
+
+*Verification actually run* (WSL Ubuntu, `app/.venv`, Python 3.13.15):
+
+| Check | Result |
+|---|---|
+| `ruff check .` | All checks passed |
+| `pytest -q` from `app/`, from the repo root, from `/tmp` | **94 passed** each time — M7-CWD's CWD-independence still holds |
+| Service starts from `.env.example` verbatim (`cp .env.example .env`, no edits) | `startup complete` then serving on :8000; `.env` deleted afterwards, tree still clean |
+| 10-case live probe through a running proxy + mock downstream, **Redis deliberately down** | 200 forwarded x3 · 200 `{}` no-rule-matched · 401 missing sig · 401 bad sig · 400 bad protobuf · 413 >1 MiB · caller-supplied `X-Request-ID` echoed verbatim |
+| `/stats` after the probe | 3 endpoint requests, `error_rate` 0.0, and 5 populated outcome counters (`no_rule_matched`, `rejected_signature_missing`, `rejected_signature_invalid`, `rejected_protobuf`, `rejected_too_large`) — the H4 accounting seam works end-to-end |
+| Redis-down degradation (C4) | 8 `WARNING cache lookup/write failed`, **zero 5xx** — degrades, does not fail. Duplicate payloads were re-forwarded (3 identical Charizards reached downstream), which is the documented at-least-once behaviour when dedup is unavailable |
+| `SIGTERM` (H7) | `shutdown started` → `shutdown complete` → `Finished server process`, clean exit in **112 ms** |
+| Secret hygiene | short / malformed / missing key each produce one `CRITICAL` naming `POKEPROXY_HMAC_KEY` plus the `openssl` command; the key value itself appears **0 times** in log output |
+| Config fail-fast (C1, H1) | bad key, missing key and missing rules file each `SystemExit(1)` with a specific message naming the variable or the path |
+| Retry behaviour under a slow downstream | **1 attempt of 3 in 10.17 s** — see R1 |
+
+*New findings, not previously in the backlog:*
+
+| ID | Sev | Finding | Evidence |
+|----|-----|---------|----------|
+| R1 | **Should fix** | The retry policy is inert against a slow downstream. The httpx per-attempt timeouts are hardcoded (`read=10.0`) and equal `FORWARD_DEADLINE_SECONDS` (10.0), so attempt 1 consumes the entire budget. Measured against a socket that accepts and never responds: **1 attempt of 3, 10.17 s**. Against a refused connection: 3 attempts, 0.48 s. `FORWARD_MAX_ATTEMPTS` therefore does nothing on the more common production failure mode (slow/hung, not refused), while `README.md` documents it as if it does. Failure is still bounded, so this is a wrong-knob bug, not an availability bug. Fix: make the per-attempt timeouts configurable and default `read` below the deadline (e.g. 3.0 against 10.0). | `main.py:70`, `proxy.py:89-101` |
+| D1 | **Should fix** | Deliverable 2 is "for each issue you find, write it up". `docs/issues/` holds 11 write-ups covering the **14 fixed** issue IDs; the **11 found-but-unfixed** ones (M2, M3, M5, M6, H6, L1, L2, L3, L4, L5, L6) exist only as rows in this file's backlog table. A reviewer who opens `docs/issues/` sees no record that they were found at all. Cheapest fix: one consolidated `docs/issues/000-known-gaps.md` — problem / impact / proposed fix / why deferred, one short block each. | `docs/issues/` |
+| R2 | Nice to have | Expected, *handled* Redis failures log a full traceback each (`exc_info=True`). Measured in the probe run: **388 of 418 log lines were traceback text** for 8 handled warnings — 93% of log volume, burying the 30 structured records that matter. At 10 rps with Redis down this becomes a log-pipeline cost problem. Fix: drop `exc_info` on these two warnings (the JSON `error` field already carries `ConnectionError: ...`), or emit it only at DEBUG. | `cache.py:20,50` |
+| R3 | Nice to have | A downstream **5xx** is cached and replayed for the full `CACHE_TTL_SECONDS`. Issue 010 decided "cache any real downstream response" and justified it for 4xx business answers — sound for 4xx, weaker for a transient 503, which is then memoized and replayed to every duplicate for 5 minutes even after downstream recovers. One-line narrowing (`status_code < 500`) if picked up. | `proxy.py:131-142`, `docs/issues/010-cache-becomes-a-dedup-layer.md:19` |
+| R4 | Nice to have | A config failure produces the intended single `CRITICAL` line **and then** uvicorn's own ~20-line `SystemExit: 1` lifespan traceback. The actionable line comes first and is correct, so this is noise rather than a defect. A container entrypoint that constructs `Settings` before handing off to uvicorn would remove it — natural Part 2 work. | verified above |
+
+*Requirements satisfied, remaining gaps and the severity ranking are in the audit response given alongside this entry; not duplicated here (token economy).*
 
 **C4 closed both deferred test-isolation reasons from C5.** `no_cache` in `test_logging.py` is no longer load-bearing for correctness (a Redis-down request now degrades instead of 500ing) — kept anyway for test speed and to keep unit tests off real network calls. Confirmed by a real end-to-end run with no mocking: unreachable Redis produced two `WARNING` log lines and a clean `502 downstream_error` in 727.8ms, not a crash.
 
@@ -157,6 +190,8 @@ Wave numbering matches the order of work in `docs/planning/part-01-production-ha
 | M5 | Medium | `/stats` is unauthenticated and leaks internal downstream URLs. | `main.py:47-50` | — | Deferred to Part 4 |
 | L4 | Low | `setdefault` keyed by URL — an unbounded-cardinality pattern. | `stats.py:53` | — | Deferred to Part 4 |
 | L6 | Low | `mock_service` is not in the wheel packaging and imports as a top-level module. | `pyproject.toml` | — | Deferred to Part 2 |
+
+R1 and D1 were found in the final audit (2026-08-22) and are now **fixed** (`docs/issues/012-retry-attempt-timeout.md`, `docs/issues/000-known-gaps.md`) — see "Decisions and changes" above. R2, R3, R4 remain open, tracked in `docs/issues/000-known-gaps.md` rather than repeated here.
 
 ### Decisions and changes
 

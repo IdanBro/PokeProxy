@@ -4,7 +4,7 @@ import base64
 from typing import Literal
 
 from google.protobuf.message import DecodeError
-from pydantic import BaseModel, ValidationInfo, field_validator
+from pydantic import BaseModel, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from pokeproxy.proto import pokemon_pb2
@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     forward_max_attempts: int = 3
     forward_deadline_seconds: float = 10.0
+    forward_attempt_timeout_seconds: float = 3.0
     redis_connect_timeout_seconds: float = 2.0
     redis_socket_timeout_seconds: float = 2.0
     cache_ttl_seconds: float = 300.0
@@ -75,6 +76,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "forward_deadline_seconds",
+        "forward_attempt_timeout_seconds",
         "redis_connect_timeout_seconds",
         "redis_socket_timeout_seconds",
         "cache_ttl_seconds",
@@ -84,6 +86,18 @@ class Settings(BaseSettings):
         if value <= 0:
             raise ValueError(f"{info.field_name.upper()} must be greater than 0")
         return value
+
+    @model_validator(mode="after")
+    def _check_attempt_timeout_fits_deadline(self) -> Settings:
+        if self.forward_attempt_timeout_seconds >= self.forward_deadline_seconds:
+            raise ValueError(
+                "FORWARD_ATTEMPT_TIMEOUT_SECONDS "
+                f"({self.forward_attempt_timeout_seconds}) must be less than "
+                f"FORWARD_DEADLINE_SECONDS ({self.forward_deadline_seconds}), otherwise a "
+                "single slow attempt consumes the entire retry budget and "
+                "FORWARD_MAX_ATTEMPTS never gets a chance to retry"
+            )
+        return self
 
     @property
     def hmac_key(self) -> bytes:

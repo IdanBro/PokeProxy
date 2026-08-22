@@ -59,6 +59,7 @@ uv run uvicorn pokeproxy.main:app --host 127.0.0.1 --port 8000
 | `LOG_LEVEL` | No | `INFO` | Log level. Output is always JSON on stdout, one object per line |
 | `FORWARD_MAX_ATTEMPTS` | No | `3` | Max attempts forwarding to a downstream before giving up |
 | `FORWARD_DEADLINE_SECONDS` | No | `10.0` | Wall-clock budget across all forward attempts combined |
+| `FORWARD_ATTEMPT_TIMEOUT_SECONDS` | No | `3.0` | Read/write timeout for a single forward attempt. Must be less than `FORWARD_DEADLINE_SECONDS`, or one slow attempt exhausts the whole budget and `FORWARD_MAX_ATTEMPTS` never gets to retry — the service refuses to start otherwise |
 | `REDIS_CONNECT_TIMEOUT_SECONDS` | No | `2.0` | Timeout establishing a connection to Redis |
 | `REDIS_SOCKET_TIMEOUT_SECONDS` | No | `2.0` | Timeout for a single Redis read/write |
 | `CACHE_TTL_SECONDS` | No | `300.0` | How long a downstream response stays cached for deduplication |

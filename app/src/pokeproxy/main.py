@@ -57,6 +57,25 @@ def _load_rules(config_path: str) -> list[Rule]:
         raise SystemExit(1) from None
 
 
+def _build_http_client(settings: Settings) -> httpx.AsyncClient:
+    """Build the shared downstream client.
+
+    `read`/`write` are bounded by `forward_attempt_timeout_seconds`, not
+    `forward_deadline_seconds` — the deadline is a budget across every retry
+    attempt combined, so a per-attempt timeout equal to it lets one slow
+    attempt swallow the whole budget and leaves `forward_max_attempts` unable
+    to retry. `Settings` enforces attempt_timeout < deadline at startup.
+    """
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(
+            connect=5.0,
+            read=settings.forward_attempt_timeout_seconds,
+            write=settings.forward_attempt_timeout_seconds,
+            pool=5.0,
+        )
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     settings = _load_settings()
@@ -66,9 +85,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     app.state.hmac_key = settings.hmac_key
     app.state.stats = StatsRegistry()
 
-    http_client = httpx.AsyncClient(
-        timeout=httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=5.0)
-    )
+    http_client = _build_http_client(settings)
     app.state.http_client = http_client
     app.state.retry_policy = RetryPolicy(
         max_attempts=settings.forward_max_attempts,

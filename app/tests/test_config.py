@@ -119,6 +119,12 @@ def test_boundary_key_is_accepted() -> None:
     [
         ("FORWARD_MAX_ATTEMPTS", "9", "forward_max_attempts", 9),
         ("FORWARD_DEADLINE_SECONDS", "42.0", "forward_deadline_seconds", 42.0),
+        (
+            "FORWARD_ATTEMPT_TIMEOUT_SECONDS",
+            "4.0",
+            "forward_attempt_timeout_seconds",
+            4.0,
+        ),
         ("REDIS_CONNECT_TIMEOUT_SECONDS", "7.5", "redis_connect_timeout_seconds", 7.5),
         ("REDIS_SOCKET_TIMEOUT_SECONDS", "8.5", "redis_socket_timeout_seconds", 8.5),
         ("CACHE_TTL_SECONDS", "120.0", "cache_ttl_seconds", 120.0),
@@ -141,6 +147,7 @@ def test_operational_settings_are_configurable_via_env(
     [
         ("FORWARD_MAX_ATTEMPTS", "0"),
         ("FORWARD_DEADLINE_SECONDS", "0"),
+        ("FORWARD_ATTEMPT_TIMEOUT_SECONDS", "0"),
         ("REDIS_CONNECT_TIMEOUT_SECONDS", "0"),
         ("REDIS_SOCKET_TIMEOUT_SECONDS", "-1"),
         ("CACHE_TTL_SECONDS", "0"),
@@ -153,3 +160,33 @@ def test_operational_settings_reject_non_positive_values(
     with pytest.raises(ValidationError) as exc:
         _build(pokeproxy_hmac_key=DEV_SECRET_B64)
     assert env_var in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    ("attempt_timeout", "deadline"),
+    [
+        ("10.0", "10.0"),  # equal — exactly the R1 default-config bug
+        ("15.0", "10.0"),  # attempt timeout longer than the whole budget
+    ],
+)
+def test_rejects_attempt_timeout_not_less_than_deadline(
+    monkeypatch: pytest.MonkeyPatch, attempt_timeout: str, deadline: str
+) -> None:
+    """R1: an attempt timeout >= the deadline lets one slow attempt eat the
+    whole retry budget, so FORWARD_MAX_ATTEMPTS never gets a chance to retry.
+    """
+    monkeypatch.setenv("FORWARD_ATTEMPT_TIMEOUT_SECONDS", attempt_timeout)
+    monkeypatch.setenv("FORWARD_DEADLINE_SECONDS", deadline)
+    with pytest.raises(ValidationError) as exc:
+        _build(pokeproxy_hmac_key=DEV_SECRET_B64)
+    assert "FORWARD_ATTEMPT_TIMEOUT_SECONDS" in str(exc.value)
+    assert "FORWARD_DEADLINE_SECONDS" in str(exc.value)
+
+
+def test_accepts_attempt_timeout_strictly_less_than_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FORWARD_ATTEMPT_TIMEOUT_SECONDS", "3.0")
+    monkeypatch.setenv("FORWARD_DEADLINE_SECONDS", "10.0")
+    settings = _build(pokeproxy_hmac_key=DEV_SECRET_B64)
+    assert settings.forward_attempt_timeout_seconds == 3.0
