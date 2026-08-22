@@ -19,6 +19,11 @@ router = APIRouter()
 
 MAX_BODY_SIZE = 1_048_576  # 1 MiB
 
+# Correlation ID. Deliberately the de-facto infrastructure name rather than an
+# X-Grd-* one: ingress controllers and service meshes already inject this, and
+# inventing our own would break the trace at the edge.
+REQUEST_ID_HEADER = "X-Request-ID"
+
 STRIP_HEADERS = frozenset({
     "x-grd-signature",
     "content-type",
@@ -39,7 +44,7 @@ def verify_signature(secret: bytes, body: bytes, signature: str) -> bool:
 
 
 def _build_forward_headers(
-    original_headers: dict[str, str], reason: str
+    original_headers: dict[str, str], reason: str, request_id: str
 ) -> dict[str, str]:
     headers: dict[str, str] = {
         k: v
@@ -48,6 +53,9 @@ def _build_forward_headers(
     }
     headers["Content-Type"] = "application/json"
     headers["X-Grd-Reason"] = reason
+    # Set explicitly: the client may not have sent one, in which case we
+    # generated it and downstream would otherwise never see it.
+    headers[REQUEST_ID_HEADER] = request_id
     return headers
 
 
@@ -67,13 +75,16 @@ async def _forward_with_retry(
 
 
 async def _forward_request(
+    request: Request,
     rule: Rule,
     pokemon: PokemonJSON,
     original_headers: dict[str, str],
     stats: StatsRegistry,
 ) -> Response:
     json_bytes = pokemon.model_dump_json().encode()
-    headers = _build_forward_headers(original_headers, rule.reason)
+    headers = _build_forward_headers(
+        original_headers, rule.reason, request.state.request_id
+    )
 
     endpoint_stats = stats.get(rule.url)
     start = time.monotonic()
@@ -86,6 +97,7 @@ async def _forward_request(
 
         endpoint_stats.request_count += 1
 
+        request.state.outcome = "forwarded"
         return Response(
             content=resp.content,
             status_code=resp.status_code,
@@ -93,12 +105,14 @@ async def _forward_request(
         )
     except httpx.TimeoutException:
         endpoint_stats.error_count += 1
+        request.state.outcome = "downstream_timeout"
         return JSONResponse(
             content={"error": "downstream timeout"},
             status_code=504,
         )
     except httpx.HTTPError:
         endpoint_stats.error_count += 1
+        request.state.outcome = "downstream_error"
         return JSONResponse(
             content={"error": "downstream error"},
             status_code=502,
@@ -113,6 +127,7 @@ async def _forward_request(
 async def stream(request: Request) -> Response:
     content_length = request.headers.get("content-length")
     if content_length and int(content_length) > MAX_BODY_SIZE:
+        request.state.outcome = "rejected_too_large"
         return JSONResponse(
             content={"error": "payload too large"},
             status_code=413,
@@ -120,6 +135,7 @@ async def stream(request: Request) -> Response:
 
     body = await request.body()
     if len(body) > MAX_BODY_SIZE:
+        request.state.outcome = "rejected_too_large"
         return JSONResponse(
             content={"error": "payload too large"},
             status_code=413,
@@ -130,7 +146,14 @@ async def stream(request: Request) -> Response:
     redis_client = request.app.state.redis
 
     signature = request.headers.get("X-Grd-Signature", "")
-    if not signature or not verify_signature(secret, body, signature):
+    if not signature:
+        request.state.outcome = "rejected_signature_missing"
+        return JSONResponse(
+            content={"error": "invalid signature"},
+            status_code=401,
+        )
+    if not verify_signature(secret, body, signature):
+        request.state.outcome = "rejected_signature_invalid"
         return JSONResponse(
             content={"error": "invalid signature"},
             status_code=401,
@@ -146,6 +169,7 @@ async def stream(request: Request) -> Response:
         try:
             pokemon = decode_pokemon(body)
         except ValueError:
+            request.state.outcome = "rejected_protobuf"
             return JSONResponse(
                 content={"error": "invalid protobuf"},
                 status_code=400,
@@ -156,6 +180,9 @@ async def stream(request: Request) -> Response:
     matched_rule = match_pokemon(pokemon, rules)
 
     if matched_rule is None:
+        # Returns 200 with an empty body, so without this label a rules
+        # misconfiguration dropping all traffic is invisible.
+        request.state.outcome = "no_rule_matched"
         return JSONResponse(content={}, status_code=200)
 
     endpoint_stats = stats.get(matched_rule.url)
@@ -164,5 +191,5 @@ async def stream(request: Request) -> Response:
     original_headers: dict[str, str] = dict(request.headers)
 
     return await _forward_request(
-        matched_rule, pokemon, original_headers, stats
+        request, matched_rule, pokemon, original_headers, stats
     )

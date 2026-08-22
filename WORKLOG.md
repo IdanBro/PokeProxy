@@ -6,7 +6,7 @@ This document is the persistent engineering state for the assignment. I update i
 
 ## Current State
 
-**Current phase:** Part 1 — Wave 1 in progress. C1 fixed; C5 is next.
+**Current phase:** Part 1 — Waves 1–2 done. C1 and C5 fixed; Wave 3 (C2, C3, C4, H1) is next.
 
 **Completed:**
 - Read-only review of `app/`: source, config, tests, mock service, load generator.
@@ -14,18 +14,21 @@ This document is the persistent engineering state for the assignment. I update i
 - `docs/planning/part-01-production-hardening.md`.
 - **Wave 0 (L7) — toolchain works.** `app/.venv` (Python 3.13) plus `uv 0.12.5`, both **inside WSL Ubuntu**, not on Windows. All verification runs via `wsl.exe`. Windows Python is still 3.11 and `uv` is not on the Windows PATH.
 - **Wave 1 (C1) — HMAC key name and validation.** Write-up: `docs/issues/001-hmac-key-configuration.md`.
+- **Wave 2 (C5) — structured JSON logging, `X-Request-ID` correlation, outcome seam.** Write-up: `docs/issues/002-structured-logging.md`.
 
 **Currently working on:**
-- Nothing in flight. C1 is complete and verified; awaiting go-ahead for C5.
+- Nothing in flight. C5 is complete and verified; awaiting go-ahead for Wave 3.
 
 **Repository state:** branch `feature/repo-review` tracking `origin`, two commits. Uncommitted: `WORKLOG.md`, `app/.env.example`, `app/README.md`, `app/src/pokeproxy/config.py`, plus untracked `app/tests/test_config.py`, `docs/issues/001-hmac-key-configuration.md`, `docs/planning/part-01-production-hardening.md`. Nothing committed yet.
 
 **Next:**
-1. C5 — structured logging, request/correlation ID, and the single outcome-accounting seam (Wave 2).
-2. Then Wave 3: C2, C3, C4, H1.
+1. Wave 3 — C2 (unbounded retry), C3 (`KEYS` scan), C4 (unguarded Redis), H1 (rules re-read per request).
+2. Then Wave 4: M1 + H7, H2 + H3, H4 + H5.
+
+**Wave 3 unblocks two deferred test gaps.** C5 labels `forwarded`, `downstream_timeout` and `downstream_error` but cannot test them: C2's unbounded retry hangs any test that reaches the forward path with the downstream down, and C4's unguarded Redis 500s any request with a valid signature. Add those tests once Wave 3 lands.
 
 **Verified baselines** (measured in WSL, not assumed):
-- Test suite: **16 passed** from `app/` (was 5 before C1).
+- Test suite: **28 passed** from `app/` (5 → 16 after C1 → 28 after C5).
 - Tests are CWD-dependent — from the repo root, 3 fail with `FileNotFoundError: 'config/rules.json'`. Confirms M7; fix it there.
 - `ruff check .` passes across the project today, so L5 is a *missing gate*, not a backlog of violations.
 - `aioredis.from_url` is **lazy**: the app starts fine with nothing listening on 6379. Input to C4 and M1.
@@ -101,7 +104,7 @@ Wave numbering matches the order of work in `docs/planning/part-01-production-ha
 |----|-----|-------|------------------|------|--------|
 | L7 | — | No `.venv`, `uv` not on PATH, local Python is 3.11 vs required 3.13. Nothing verified by execution yet. | environment | 0 | **Resolved** — venv + `uv 0.12.5` exist, but in **WSL**, not Windows. Verification runs via `wsl.exe`. |
 | C1 | Critical | HMAC secret var name matches no docs, and the value has no meaningful validation. `changeme` (6 bytes), `""` (0 bytes) and `abcd efgh` (whitespace silently discarded) all started successfully. A base64 *padding* error did fail at startup, accidentally, as a bare `binascii.Error`. | `config.py:18,23-25`, `.env.example:1`, `README.md:52` | 1 | **Fixed** — `docs/issues/001-hmac-key-configuration.md` |
-| C5 | Critical | No logging of any kind. Every failure path returns JSON and vanishes. No request or correlation ID. | no `logging` import in `app/` | 2 | Open — also pick up the C1 leftover: wrap the startup `ValidationError` so config failures are one clear line, not a 25-line traceback. |
+| C5 | Critical | No logging of any kind. Every failure path returns JSON and vanishes. No request or correlation ID. Measured: bad vs **missing** signature logged identically; a Redis-down 500 produced ~100 raw traceback lines. | no `logging` import in `app/` | 2 | **Fixed** — `docs/issues/002-structured-logging.md`. Included the C1 leftover (clean config-failure line). |
 | C2 | Critical | `while True` retry with no cap and no deadline, a new `AsyncClient` per attempt never closed, `timeout=600.0` overriding the configured timeouts, and `app.state.http_client` left as dead code. | `proxy.py:54-66`, `main.py:24-27` | 3 | Open |
 | C3 | Critical | `redis.keys("pokeproxy:pokemon:*")` on every request, then a Python-side linear scan to find the key a single `GET` would have returned. | `cache.py:18` | 3 | Open |
 | C4 | Critical | Redis calls unguarded, no socket or connect timeouts. A Redis blip becomes a 500 on 100% of traffic; a hung Redis blocks indefinitely. | `proxy.py:142,153`, `main.py:29` | 3 | Open |
@@ -113,7 +116,7 @@ Wave numbering matches the order of work in `docs/planning/part-01-production-ha
 | H4 | High | `request_count` only increments on success while `error_count` increments on failure, so `error_rate` reads 0.0 during a total outage. `bytes_received` is assigned rather than accumulated. Rejections and no-rule-matched are never counted. | `stats.py:29`, `proxy.py:87,95,101,162` | 4 | Open |
 | H5 | High | `_response_times` grows without bound and `bisect.insort` is O(n) per insert, so memory and CPU degrade with uptime. | `stats.py:15,19` | 4 | Open |
 | H6 | High | Config assumes localhost, relative paths and a loopback bind. None of it survives a container. | `config/rules.json`, `config.py:15`, `mock_service/main.py:34` | 4 / P2 | Open |
-| M2 | Medium | `int(content_length)` unguarded, so a malformed header is a 500. Body is fully buffered *before* the size check, so the 1 MiB limit does not actually limit anything. | `proxy.py:114-126` | 5 | Open |
+| M2 | Medium | ~~`int(content_length)` unguarded, so a malformed header is a 500.~~ **First half disproved:** measured during C5 — uvicorn's httptools parser rejects `Content-Length: abc` with its own 400 before the handler runs, so `int()` never sees a non-digit string. Second half stands: body is fully buffered *before* the size check, so the 1 MiB limit does not actually limit anything. | `proxy.py:114-126` | 5 | Open — re-derive before fixing |
 | M6 | Medium | `POKEPROXY_PORT` is defined and documented but read by nothing. The real port comes from the uvicorn CLI. | `config.py:20`, `.env.example:3` | 5 | Open |
 | M7 | Medium | Five tests, all on decode/parse/match. Nothing covers `/stream`, HMAC, cache, Redis failure, downstream failure, headers or size limits. | `tests/test_basic.py` | 5 | Open |
 | L1 | Low | A working HMAC secret is committed in `.env.example` and hardcoded as the load generator default. | `.env.example:1`, `load_generator.py:74` | 5 | Open |
@@ -132,7 +135,13 @@ Wave numbering matches the order of work in `docs/planning/part-01-production-ha
 
 Verified: 11 new tests (suite 5 → 16); the new module run against HEAD's code fails 9 of 11, confirming real regression cover; the documented Quick Start now reaches `Application startup complete` where it previously exited 3; `POKEPROXY_HMAC_KEY=changeme` exits 3 with the actionable message; `ruff check .` clean.
 
-Deliberately out of scope: `scripts/load_generator.py` is untouched (its 25-byte default still passes the 16-byte floor — that was the reason for choosing 16), and the pydantic traceback is not yet wrapped in a clean startup error. Full reasoning and residual risk in `docs/issues/001-hmac-key-configuration.md`.
+Deliberately out of scope: `scripts/load_generator.py` is untouched (its 25-byte default still passes the 16-byte floor — that was the reason for choosing 16). Full reasoning and residual risk in `docs/issues/001-hmac-key-configuration.md`.
+
+**C5 — structured logging (Wave 2).** stdlib `logging` plus a JSON formatter in a new `logging_config.py`; no new dependency, and one setup unifies uvicorn's own output instead of leaving it plaintext alongside ours. Uvicorn's access log is replaced by our own middleware line because it cannot carry a correlation ID, latency or outcome. Correlation via `X-Request-ID` — deliberately the infrastructure convention rather than an `X-Grd-*` name, so the trace survives the ingress. Handlers label `request.state.outcome`; the middleware is the single place that reads it and emits one access line. Unhandled exceptions become a JSON 500 carrying the request ID rather than a raw ASGI traceback. Also folded in the C1 leftover: bad config is now one CRITICAL line.
+
+Kept deliberately simple — no `contextvars`, no outcome enum, no console log format.
+
+Verified: 12 new tests (16 → 28); the same 5-case probe used for the "before" measurement went from **116 plaintext lines to 15 structured JSON records** (plus 88 traceback lines, kept multi-line on purpose); the two 401s are now distinguishable; `ruff check .` clean. Full detail in `docs/issues/002-structured-logging.md`.
 
 ---
 

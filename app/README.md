@@ -53,6 +53,7 @@ uv run uvicorn pokeproxy.main:app --host 127.0.0.1 --port 8000
 | `POKEPROXY_CONFIG` | Yes | - | Path to rules JSON file |
 | `POKEPROXY_PORT` | No | 8000 | Proxy service port |
 | `REDIS_URL` | No | `redis://localhost:6379/0` | Redis connection URL |
+| `LOG_LEVEL` | No | `INFO` | Log level. Output is always JSON on stdout, one object per line |
 
 ### Rules Config
 
@@ -83,6 +84,25 @@ Rules are loaded from the JSON file specified by `POKEPROXY_CONFIG`.
 | `/stream` | POST | Proxy endpoint — validates, matches, forwards |
 | `/health` | GET | Health check |
 | `/stats` | GET | Per-endpoint metrics |
+
+### Logging and request correlation
+
+Logs are JSON, one object per line, on stdout. Every request produces exactly
+one access line carrying `request_id`, `method`, `path`, `status`,
+`duration_ms` and `outcome`.
+
+`outcome` is the reason a request ended the way it did, and is the field worth
+alerting on — several outcomes share a status code. Current values:
+`forwarded`, `no_rule_matched`, `rejected_signature_missing`,
+`rejected_signature_invalid`, `rejected_protobuf`, `rejected_too_large`,
+`downstream_timeout`, `downstream_error`, `internal_error`.
+
+`no_rule_matched` returns HTTP 200 with an empty body, so it is only
+distinguishable from a successful forward by this field.
+
+Requests are correlated with `X-Request-ID`. Supply one and it is echoed back
+and passed downstream; omit it and the proxy generates a UUID4. `/health` and
+`/stats` are not access-logged.
 
 ## Load Generator
 

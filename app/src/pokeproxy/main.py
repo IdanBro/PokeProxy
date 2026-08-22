@@ -1,21 +1,54 @@
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+import logging
+import time
+import uuid
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
 import redis.asyncio as aioredis
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from pokeproxy.config import Settings
+from pokeproxy.logging_config import setup_logging
+from pokeproxy.proxy import REQUEST_ID_HEADER
 from pokeproxy.proxy import router as proxy_router
 from pokeproxy.stats import StatsRegistry
+
+# Configure logging at import time. Uvicorn sets up its own logging before it
+# imports the app, so doing it here means even its startup lines come out as
+# JSON instead of the first few lines being plaintext.
+setup_logging()
+
+logger = logging.getLogger("pokeproxy")
+
+# kubelet polls these continuously; access lines for them would bury real traffic.
+_UNLOGGED_PATHS = frozenset({"/health", "/stats"})
+
+
+def _load_settings() -> Settings:
+    """Load configuration, failing with one clear line instead of a traceback."""
+    try:
+        return Settings()  # type: ignore[call-arg]
+    except ValidationError as e:
+        problems = "; ".join(
+            f"{'.'.join(str(part) for part in err['loc'])}: {err['msg']}"
+            for err in e.errors()
+        )
+        logger.critical(
+            "configuration invalid, refusing to start", extra={"problems": problems}
+        )
+        raise SystemExit(1) from None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
-    settings = Settings()  # type: ignore[call-arg]
+    settings = _load_settings()
+    logging.getLogger().setLevel(settings.log_level.upper())
 
     app.state.config_path = settings.pokeproxy_config
     app.state.hmac_key = settings.hmac_key
@@ -29,13 +62,85 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     redis_client = aioredis.from_url(settings.redis_url)
     app.state.redis = redis_client
 
+    logger.info(
+        "startup complete",
+        extra={
+            "config_path": settings.pokeproxy_config,
+            "log_level": settings.log_level,
+        },
+    )
+
     yield
 
+    logger.info("shutdown started")
     await redis_client.aclose()
     await http_client.aclose()
+    logger.info("shutdown complete")
 
 
 app = FastAPI(title="PokeProxy", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def access_log(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    """Assign a correlation ID and emit exactly one access line per request.
+
+    Handlers record *why* a request ended the way it did via
+    `request.state.outcome`; this is the single place that reads it.
+    """
+    request_id = request.headers.get(REQUEST_ID_HEADER) or str(uuid.uuid4())
+    request.state.request_id = request_id
+    request.state.outcome = None
+
+    start = time.perf_counter()
+
+    def elapsed_ms() -> float:
+        return round((time.perf_counter() - start) * 1000, 2)
+
+    try:
+        response = await call_next(request)
+    except Exception:
+        # Handle it here so the client gets a correlatable JSON error and the
+        # failure is one structured record rather than a raw ASGI traceback.
+        logger.exception(
+            "request failed",
+            extra={
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+                "status": 500,
+                "duration_ms": elapsed_ms(),
+                "outcome": "internal_error",
+            },
+        )
+        return JSONResponse(
+            content={"error": "internal error", "request_id": request_id},
+            status_code=500,
+            headers={REQUEST_ID_HEADER: request_id},
+        )
+
+    response.headers[REQUEST_ID_HEADER] = request_id
+
+    if request.url.path not in _UNLOGGED_PATHS:
+        logger.info(
+            "request",
+            extra={
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+                "status": response.status_code,
+                # "unknown" rather than "ok" so a terminal path I forgot to
+                # label shows up as a gap instead of hiding as a success.
+                "outcome": request.state.outcome or "unknown",
+                "duration_ms": elapsed_ms(),
+            },
+        )
+
+    return response
+
+
 app.include_router(proxy_router)
 
 

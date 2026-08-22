@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     pokeproxy_config: str
     pokeproxy_port: int = 8000
     redis_url: str = "redis://localhost:6379/0"
+    log_level: str = "INFO"
 
     @field_validator("pokeproxy_hmac_key")
     @classmethod
