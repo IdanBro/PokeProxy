@@ -5,14 +5,9 @@ line carrying a correlation ID and an `outcome` saying why the request ended
 the way it did. Before this, a bad signature and a *missing* signature logged
 identically, and "no rule matched" returned 200 and logged nothing at all.
 
-Two constraints shape these tests, both of them other people's bugs:
-
-- Redis is not running locally and the cache call is unguarded (C4), so any
-  request with a valid signature 500s before reaching the decode. The
-  `no_cache` fixture patches the cache out so C5 can be tested on its own.
-- `_forward_with_retry` retries forever with no cap (C2), so a test that
-  reaches the forward path while the downstream is down would hang. Every test
-  here therefore uses a payload that matches no rule.
+The `no_cache` fixture stubs out the cache so tests don't depend on a real
+Redis connection. `_client_with_downstream` swaps in a mocked downstream so
+forward-path outcomes are testable without a real downstream service.
 """
 
 from __future__ import annotations
@@ -56,7 +51,7 @@ def logs(monkeypatch: pytest.MonkeyPatch) -> Iterator[io.StringIO]:
 
 @pytest.fixture
 def no_cache(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Treat every lookup as a miss, so Redis being down (C4) is not in play."""
+    """Stub the cache so tests don't depend on a real Redis connection."""
 
     async def _miss(redis: object, cache_key: str) -> None:
         return None
@@ -293,7 +288,7 @@ def test_forwarded_outcome(logs: io.StringIO, no_cache: None) -> None:
 def test_downstream_timeout_outcome(
     logs: io.StringIO, no_cache: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("POKEPROXY_FORWARD_MAX_ATTEMPTS", "1")
+    monkeypatch.setenv("FORWARD_MAX_ATTEMPTS", "1")
 
     async def always_time_out(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("downstream did not respond", request=request)
@@ -311,7 +306,7 @@ def test_downstream_timeout_outcome(
 def test_downstream_error_outcome(
     logs: io.StringIO, no_cache: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("POKEPROXY_FORWARD_MAX_ATTEMPTS", "1")
+    monkeypatch.setenv("FORWARD_MAX_ATTEMPTS", "1")
 
     async def always_refuse(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused", request=request)

@@ -63,7 +63,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         deadline_seconds=settings.forward_deadline_seconds,
     )
 
-    redis_client = aioredis.from_url(settings.redis_url)
+    redis_client = aioredis.from_url(
+        settings.redis_url,
+        socket_connect_timeout=settings.redis_connect_timeout_seconds,
+        socket_timeout=settings.redis_socket_timeout_seconds,
+    )
     app.state.redis = redis_client
 
     logger.info(

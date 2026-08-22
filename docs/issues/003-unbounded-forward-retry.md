@@ -46,7 +46,9 @@ still retrying after 3s  : True
 
 **Reuse `app.state.http_client`.** It already existed, was already correctly configured, and was already closed on shutdown — it just needed to be read. This deletes the leak outright.
 
-**Cap attempts and add an overall deadline, both configurable via `.env`** — `POKEPROXY_FORWARD_MAX_ATTEMPTS` (default 3) and `POKEPROXY_FORWARD_DEADLINE_SECONDS` (default 10.0), validated at startup the same way as C1: non-positive values are refused before the process serves traffic, not discovered mid-outage.
+**Cap attempts and add an overall deadline, both configurable via `.env`** — `FORWARD_MAX_ATTEMPTS` (default 3) and `FORWARD_DEADLINE_SECONDS` (default 10.0), validated at startup the same way as C1: non-positive values are refused before the process serves traffic, not discovered mid-outage.
+
+**Correction, found later:** at the time this issue was closed, `.env.example` and `README.md` documented these as `POKEPROXY_FORWARD_MAX_ATTEMPTS`/`POKEPROXY_FORWARD_DEADLINE_SECONDS`. That was wrong — `Settings` has no `POKEPROXY_` prefix configured, so the field mapping was always the unprefixed name (matching `REDIS_URL`, `LOG_LEVEL`). The code itself worked correctly; only the docs and the validator error-message text named the wrong variable, so an operator following the README exactly as written would set a variable the process silently ignored. Fixed when the Redis timeout settings were added — see `docs/issues/005-unguarded-redis-calls.md`.
 
 **Exhaustion re-raises the original exception type**, so the existing `httpx.TimeoutException` / `httpx.HTTPError` handlers in `_forward_request` produce `downstream_timeout` / `downstream_error` without any new outcome value. `httpx.ConnectError` is not a `TimeoutException` subclass (verified via MRO inspection), so a refused connection correctly lands as `downstream_error` and an actual timeout as `downstream_timeout`.
 

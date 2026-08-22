@@ -23,7 +23,7 @@ ENV_EXAMPLE = Path(__file__).resolve().parent.parent / ".env.example"
 def _isolated_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Settings reads the process environment; clear it so tests are hermetic."""
     for key in list(os.environ):
-        if key.upper().startswith(("POKEPROXY_", "REDIS_")):
+        if key.upper().startswith(("POKEPROXY_", "REDIS_", "FORWARD_", "LOG_")):
             monkeypatch.delenv(key, raising=False)
 
 
@@ -112,3 +112,42 @@ def test_boundary_key_is_accepted() -> None:
     one_short = base64.b64encode(b"x" * (MIN_HMAC_KEY_BYTES - 1)).decode()
     with pytest.raises(ValidationError):
         _build(pokeproxy_hmac_key=one_short)
+
+
+@pytest.mark.parametrize(
+    ("env_var", "value", "attr", "expected"),
+    [
+        ("FORWARD_MAX_ATTEMPTS", "9", "forward_max_attempts", 9),
+        ("FORWARD_DEADLINE_SECONDS", "42.0", "forward_deadline_seconds", 42.0),
+        ("REDIS_CONNECT_TIMEOUT_SECONDS", "7.5", "redis_connect_timeout_seconds", 7.5),
+        ("REDIS_SOCKET_TIMEOUT_SECONDS", "8.5", "redis_socket_timeout_seconds", 8.5),
+    ],
+)
+def test_operational_settings_are_configurable_via_env(
+    monkeypatch: pytest.MonkeyPatch,
+    env_var: str,
+    value: str,
+    attr: str,
+    expected: float,
+) -> None:
+    monkeypatch.setenv(env_var, value)
+    settings = _build(pokeproxy_hmac_key=DEV_SECRET_B64)
+    assert getattr(settings, attr) == expected
+
+
+@pytest.mark.parametrize(
+    ("env_var", "value"),
+    [
+        ("FORWARD_MAX_ATTEMPTS", "0"),
+        ("FORWARD_DEADLINE_SECONDS", "0"),
+        ("REDIS_CONNECT_TIMEOUT_SECONDS", "0"),
+        ("REDIS_SOCKET_TIMEOUT_SECONDS", "-1"),
+    ],
+)
+def test_operational_settings_reject_non_positive_values(
+    monkeypatch: pytest.MonkeyPatch, env_var: str, value: str
+) -> None:
+    monkeypatch.setenv(env_var, value)
+    with pytest.raises(ValidationError) as exc:
+        _build(pokeproxy_hmac_key=DEV_SECRET_B64)
+    assert env_var in str(exc.value)

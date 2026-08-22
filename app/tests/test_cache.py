@@ -1,9 +1,21 @@
 from __future__ import annotations
 
 import json
+import logging
+
+import pytest
+from redis.exceptions import ConnectionError as RedisConnectionError
 
 from pokeproxy.cache import CACHE_TTL, cache_pokemon, get_cached_pokemon, make_cache_key
 from pokeproxy.config import PokemonJSON
+
+
+class UnavailableRedis:
+    async def get(self, key: str) -> str | None:
+        raise RedisConnectionError("connection refused")
+
+    async def set(self, key: str, value: str, ex: int | None = None) -> None:
+        raise RedisConnectionError("connection refused")
 
 
 class FakeRedis:
@@ -85,3 +97,27 @@ async def test_cache_pokemon_stores_with_ttl() -> None:
 
 def test_make_cache_key_is_namespaced() -> None:
     assert make_cache_key("abc123") == "pokeproxy:pokemon:abc123"
+
+
+async def test_lookup_failure_is_treated_as_a_miss() -> None:
+    result = await get_cached_pokemon(UnavailableRedis(), "pokeproxy:pokemon:x")
+
+    assert result is None
+
+
+async def test_lookup_failure_is_logged(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="pokeproxy"):
+        await get_cached_pokemon(UnavailableRedis(), "pokeproxy:pokemon:x")
+
+    assert "cache lookup failed" in caplog.text
+
+
+async def test_write_failure_does_not_raise() -> None:
+    await cache_pokemon(UnavailableRedis(), make_cache_key("x"), _pikachu())
+
+
+async def test_write_failure_is_logged(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="pokeproxy"):
+        await cache_pokemon(UnavailableRedis(), make_cache_key("x"), _pikachu())
+
+    assert "cache write failed" in caplog.text

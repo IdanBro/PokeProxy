@@ -6,7 +6,7 @@ This document is the persistent engineering state for the assignment. I update i
 
 ## Current State
 
-**Current phase:** Part 1 — Wave 3 in progress. C1, C5, C2, C3 fixed; C4 is next.
+**Current phase:** Part 1 — Wave 3 done. C1, C5, C2, C3, C4 fixed; H1 is next.
 
 **Completed:**
 - Read-only review of `app/`: source, config, tests, mock service, load generator.
@@ -17,20 +17,21 @@ This document is the persistent engineering state for the assignment. I update i
 - **Wave 2 (C5) — structured JSON logging, `X-Request-ID` correlation, outcome seam.** Write-up: `docs/issues/002-structured-logging.md`.
 - **Wave 3, part 1 (C2) — bounded forward retry, shared client, `.env`-configurable cap/deadline.** Write-up: `docs/issues/003-unbounded-forward-retry.md`.
 - **Wave 3, part 2 (C3) — cache lookup is a single `GET`, not a keyspace scan.** Write-up: `docs/issues/004-cache-keyspace-scan.md`.
+- **Wave 3, part 3 (C4) — Redis calls guarded, client-level timeouts.** Write-up: `docs/issues/005-unguarded-redis-calls.md`.
 
 **Currently working on:**
-- Nothing in flight. C3 is complete and verified; awaiting go-ahead for C4.
+- Nothing in flight. C4 is complete and verified; awaiting go-ahead for H1. **Wave 3 is now done** — C2, C3, C4 all fixed.
 
-**Repository state:** branch `feature/repo-review` tracking `origin`. Commits through C2 pushed (`868f926`). C3 uncommitted.
+**Repository state:** branch `feature/repo-review` tracking `origin`. Commits through C3 pushed (`f70f98a`). C4 uncommitted.
 
 **Next:**
-1. Wave 3, remainder — C4 (unguarded Redis), H1 (rules re-read per request).
+1. H1 — rules re-read, re-parsed and re-validated from disk on every request. Wave 3's last item; startup-only load already decided (see planning doc).
 2. Then Wave 4: M1 + H7, H2 + H3, H4 + H5.
 
-**C4 is the last blocker on the second deferred C5 test gap.** Every proxy test still monkeypatches `get_cached_pokemon`/`cache_pokemon` around a live-Redis dependency, because Redis isn't running in this dev environment and the cache call remains unguarded. Closes when C4 lands.
+**C4 closed both deferred test-isolation reasons from C5.** `no_cache` in `test_logging.py` is no longer load-bearing for correctness (a Redis-down request now degrades instead of 500ing) — kept anyway for test speed and to keep unit tests off real network calls. Confirmed by a real end-to-end run with no mocking: unreachable Redis produced two `WARNING` log lines and a clean `502 downstream_error` in 727.8ms, not a crash.
 
 **Verified baselines** (measured in WSL, not assumed):
-- Test suite: **44 passed** from `app/` (5 → 16 after C1 → 28 after C5 → 38 after C2 → 44 after C3).
+- Test suite: **48 passed** from `app/` (5 → 16 after C1 → 28 after C5 → 38 after C2 → 44 after C3 → 48 after C4).
 - Tests are CWD-dependent — from the repo root, 3 fail with `FileNotFoundError: 'config/rules.json'`. Confirms M7; fix it there.
 - `ruff check .` passes across the project today, so L5 is a *missing gate*, not a backlog of violations.
 - `aioredis.from_url` is **lazy**: the app starts fine with nothing listening on 6379. Input to C4 and M1.
@@ -107,9 +108,9 @@ Wave numbering matches the order of work in `docs/planning/part-01-production-ha
 | L7 | — | No `.venv`, `uv` not on PATH, local Python is 3.11 vs required 3.13. Nothing verified by execution yet. | environment | 0 | **Resolved** — venv + `uv 0.12.5` exist, but in **WSL**, not Windows. Verification runs via `wsl.exe`. |
 | C1 | Critical | HMAC secret var name matches no docs, and the value has no meaningful validation. `changeme` (6 bytes), `""` (0 bytes) and `abcd efgh` (whitespace silently discarded) all started successfully. A base64 *padding* error did fail at startup, accidentally, as a bare `binascii.Error`. | `config.py:18,23-25`, `.env.example:1`, `README.md:52` | 1 | **Fixed** — `docs/issues/001-hmac-key-configuration.md` |
 | C5 | Critical | No logging of any kind. Every failure path returns JSON and vanishes. No request or correlation ID. Measured: bad vs **missing** signature logged identically; a Redis-down 500 produced ~100 raw traceback lines. | no `logging` import in `app/` | 2 | **Fixed** — `docs/issues/002-structured-logging.md`. Included the C1 leftover (clean config-failure line). |
-| C2 | Critical | `while True` retry with no cap and no deadline, a new `AsyncClient` per attempt never closed, `timeout=600.0` overriding the configured timeouts, and `app.state.http_client` left as dead code. Measured: 4 leaked clients in 3s against a refused connection, still retrying. | `proxy.py:54-66`, `main.py:24-27` | 3 | **Fixed** — `docs/issues/003-unbounded-forward-retry.md`. Cap and deadline are now `.env`-configurable (`POKEPROXY_FORWARD_MAX_ATTEMPTS`, `POKEPROXY_FORWARD_DEADLINE_SECONDS`). |
+| C2 | Critical | `while True` retry with no cap and no deadline, a new `AsyncClient` per attempt never closed, `timeout=600.0` overriding the configured timeouts, and `app.state.http_client` left as dead code. Measured: 4 leaked clients in 3s against a refused connection, still retrying. | `proxy.py:54-66`, `main.py:24-27` | 3 | **Fixed** — `docs/issues/003-unbounded-forward-retry.md`. Cap and deadline are `.env`-configurable (`FORWARD_MAX_ATTEMPTS`, `FORWARD_DEADLINE_SECONDS` — corrected from an earlier, wrongly-documented `POKEPROXY_` prefix, see below). |
 | C3 | Critical | `redis.keys("pokeproxy:pokemon:*")` on every request, then a Python-side linear scan to find the key a single `GET` would have returned. | `cache.py:18` | 3 | **Fixed** — `docs/issues/004-cache-keyspace-scan.md`. |
-| C4 | Critical | Redis calls unguarded, no socket or connect timeouts. A Redis blip becomes a 500 on 100% of traffic; a hung Redis blocks indefinitely. | `proxy.py:142,153`, `main.py:29` | 3 | Open |
+| C4 | Critical | Redis calls unguarded, no socket or connect timeouts. A Redis blip becomes a 500 on 100% of traffic; a hung Redis blocks indefinitely. Both halves reproduced: connection-refused and a raw TCP server that accepts and never responds. | `proxy.py:142,153`, `main.py:29` | 3 | **Fixed** — `docs/issues/005-unguarded-redis-calls.md`. |
 | H1 | High | `rules.json` re-read, re-parsed and re-validated from disk on every request, synchronously, on the event loop. Config errors surface at request time instead of startup. | `proxy.py:155`, `rules.py:110-135` | 3 | Open — startup-only decided |
 | M1 | Medium | `/health` is a hardcoded string. No readiness concept. | `main.py:42-44` | 4 | Open |
 | H7 | High | No graceful shutdown and no readiness flip on SIGTERM. Every rollout drops in-flight requests. | `main.py:16-35` | 4 | Open |
@@ -139,13 +140,21 @@ Verified: 11 new tests (suite 5 → 16); the new module run against HEAD's code 
 
 Deliberately out of scope: `scripts/load_generator.py` is untouched (its 25-byte default still passes the 16-byte floor — that was the reason for choosing 16). Full reasoning and residual risk in `docs/issues/001-hmac-key-configuration.md`.
 
-**C2 — bounded forward retry (Wave 3).** `_forward_with_retry` now reuses the already-existing, already-correctly-configured `app.state.http_client` instead of leaking a new `AsyncClient` per attempt, and stops after a configurable `POKEPROXY_FORWARD_MAX_ATTEMPTS` (default 3) or `POKEPROXY_FORWARD_DEADLINE_SECONDS` (default 10.0), whichever comes first — both validated at startup like C1. Exhaustion re-raises the original exception type, so the existing `downstream_timeout`/`downstream_error` outcome handling from C5 applies with no new outcome value. `RetryPolicy` (a frozen dataclass) and a pure `_next_backoff_delay` function replace the old ad-hoc loop state.
+**C2 — bounded forward retry (Wave 3).** `_forward_with_retry` now reuses the already-existing, already-correctly-configured `app.state.http_client` instead of leaking a new `AsyncClient` per attempt, and stops after a configurable `FORWARD_MAX_ATTEMPTS` (default 3) or `FORWARD_DEADLINE_SECONDS` (default 10.0), whichever comes first — both validated at startup like C1. Exhaustion re-raises the original exception type, so the existing `downstream_timeout`/`downstream_error` outcome handling from C5 applies with no new outcome value. `RetryPolicy` (a frozen dataclass) and a pure `_next_backoff_delay` function replace the old ad-hoc loop state.
 
 The retry loop takes its clock and sleep function as injected dependencies (`clock: Callable[[], float] = time.monotonic`, `sleep: ... = asyncio.sleep`) rather than calling them directly — this came out of debugging a flaky deadline test that monkeypatched the global `time.monotonic` and starved asyncio's own internal scheduler, which reads the same function.
 
-Verified: 10 new tests (28 → 38) — 7 isolated retry-loop tests plus the 3 `forwarded`/`downstream_timeout`/`downstream_error` outcome tests C5 had deferred, now unblocked; manual end-to-end check (downstream mocked, cache bypassed since C4 is still open) showed a bounded 502 in ~277ms where the old code would have retried forever; `ruff check .` clean. Full detail in `docs/issues/003-unbounded-forward-retry.md`.
+Verified: 10 new tests (28 → 38) — 7 isolated retry-loop tests plus the 3 `forwarded`/`downstream_timeout`/`downstream_error` outcome tests C5 had deferred, now unblocked; manual end-to-end check (downstream mocked, cache bypassed since Redis wasn't guarded yet) showed a bounded 502 in ~277ms where the old code would have retried forever; `ruff check .` clean. Full detail in `docs/issues/003-unbounded-forward-retry.md`.
 
 **C3 — cache lookup is a single GET (Wave 3).** `get_cached_pokemon` replaced `KEYS "pokeproxy:pokemon:*"` plus a Python-side scan with one `redis.get(cache_key)` — same key format, same TTL, same return shape, no behavior change beyond dropping the O(keyspace) cost. No live Redis in this environment, so verification uses a minimal in-memory fake implementing the `get`/`set`/`keys` subset actually called; the regression test asserting `keys_calls == 0` fails against HEAD's code (`1 == 0`) and passes against the fix. 6 new tests (38 → 44); `ruff check .` clean. Full detail in `docs/issues/004-cache-keyspace-scan.md`.
+
+**C4 — guarded Redis calls, client-level timeouts (Wave 3).** `get_cached_pokemon`/`cache_pokemon` each wrap their Redis call in `try`/`except RedisError`, logging a `WARNING` with the traceback and degrading to a miss / a no-op write instead of propagating. `aioredis.from_url` gains `socket_connect_timeout=2.0` and `socket_timeout=2.0`, so a hung (not just unreachable) Redis is also bounded. Guard lives inside `cache.py`, not at the `proxy.py` call sites — best-effort is a property of the cache abstraction, so callers shouldn't need to know Redis can fail.
+
+Verified two distinct failure modes for real, not just against a fake: a refused connection (full request through `TestClient`, no mocking — two `WARNING` lines, then a clean `502` in 727.8ms) and a genuinely hung Redis (a raw TCP server that accepts and never responds — `TimeoutError` raised at the 2.0s socket timeout, caught, logged, process exits cleanly in 2.88s, not a hang). 4 new unit tests (44 → 48); the same 4 run against pre-fix `cache.py` all fail with an uncaught `ConnectionError`. `ruff check .` clean. Full detail in `docs/issues/005-unguarded-redis-calls.md`.
+
+**Follow-up — Redis timeouts made `.env`-configurable, and a real naming bug fixed.** `REDIS_CONNECT_TIMEOUT_SECONDS`/`REDIS_SOCKET_TIMEOUT_SECONDS` (both default 2.0) replace the two hardcoded constants from the original C4 fix. While extending the pattern, found that C2's `.env.example`/`README.md`/validator messages documented `POKEPROXY_FORWARD_MAX_ATTEMPTS`/`POKEPROXY_FORWARD_DEADLINE_SECONDS` — but `Settings` has no `POKEPROXY_` prefix, so the *actual* working names were always `FORWARD_MAX_ATTEMPTS`/`FORWARD_DEADLINE_SECONDS` (matching `REDIS_URL`, `LOG_LEVEL`). The field mapping itself was never broken; only the docs and error-message text named a variable the process silently ignored. Confirmed the ignored-var behavior with `FORWARD_MAX_ATTEMPTS=9` under the wrong prefix (stayed at default 3) vs. the correct name (took effect). Also caught two tests in `test_logging.py` that set `POKEPROXY_FORWARD_MAX_ATTEMPTS=1` expecting a fast single-attempt run — silently ignored, so those tests were passing by coincidence (3 attempts still fit inside the test's own timing budget), not for the reason claimed. Fixed both.
+
+All four operational settings (`forward_max_attempts`, `forward_deadline_seconds`, `redis_connect_timeout_seconds`, `redis_socket_timeout_seconds`) now share one `_check_positive_seconds` validator keyed off `pydantic.ValidationInfo.field_name`, so the error message always names the variable the process actually reads. 8 new tests in `test_config.py` (48 → 56) proving each of the four env vars actually takes effect and that non-positive values are rejected by name — this is the test category that was missing and let the original naming bug ship unnoticed. `.env.example`/`README.md`/both issue docs corrected. Not committed — done as a direct follow-up request, no new `docs/issues/` entry opened for it since it's a correction to already-documented C2/C4, not a new Part 1 issue.
 
 **C5 — structured logging (Wave 2).** stdlib `logging` plus a JSON formatter in a new `logging_config.py`; no new dependency, and one setup unifies uvicorn's own output instead of leaving it plaintext alongside ours. Uvicorn's access log is replaced by our own middleware line because it cannot carry a correlation ID, latency or outcome. Correlation via `X-Request-ID` — deliberately the infrastructure convention rather than an `X-Grd-*` name, so the trace survives the ingress. Handlers label `request.state.outcome`; the middleware is the single place that reads it and emits one access line. Unhandled exceptions become a JSON 500 carrying the request ID rather than a raw ASGI traceback. Also folded in the C1 leftover: bad config is now one CRITICAL line.
 

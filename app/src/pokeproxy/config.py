@@ -4,7 +4,7 @@ import base64
 from typing import Literal
 
 from google.protobuf.message import DecodeError
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from pokeproxy.proto import pokemon_pb2
@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     forward_max_attempts: int = 3
     forward_deadline_seconds: float = 10.0
+    redis_connect_timeout_seconds: float = 2.0
+    redis_socket_timeout_seconds: float = 2.0
 
     @field_validator("pokeproxy_hmac_key")
     @classmethod
@@ -67,16 +69,18 @@ class Settings(BaseSettings):
     @classmethod
     def _check_forward_max_attempts(cls, value: int) -> int:
         if value < 1:
-            raise ValueError("POKEPROXY_FORWARD_MAX_ATTEMPTS must be at least 1")
+            raise ValueError("FORWARD_MAX_ATTEMPTS must be at least 1")
         return value
 
-    @field_validator("forward_deadline_seconds")
+    @field_validator(
+        "forward_deadline_seconds",
+        "redis_connect_timeout_seconds",
+        "redis_socket_timeout_seconds",
+    )
     @classmethod
-    def _check_forward_deadline_seconds(cls, value: float) -> float:
+    def _check_positive_seconds(cls, value: float, info: ValidationInfo) -> float:
         if value <= 0:
-            raise ValueError(
-                "POKEPROXY_FORWARD_DEADLINE_SECONDS must be greater than 0"
-            )
+            raise ValueError(f"{info.field_name.upper()} must be greater than 0")
         return value
 
     @property
