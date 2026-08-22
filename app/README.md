@@ -49,7 +49,7 @@ uv run uvicorn pokeproxy.main:app --host 127.0.0.1 --port 8000
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `POKEPROXY_SECRET` | Yes | - | Base64-encoded HMAC secret |
+| `POKEPROXY_HMAC_KEY` | Yes | - | Base64-encoded HMAC key. Must decode to at least 16 bytes; the service refuses to start otherwise. Generate with `openssl rand -base64 32` |
 | `POKEPROXY_CONFIG` | Yes | - | Path to rules JSON file |
 | `POKEPROXY_PORT` | No | 8000 | Proxy service port |
 | `REDIS_URL` | No | `redis://localhost:6379/0` | Redis connection URL |

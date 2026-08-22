@@ -2,31 +2,84 @@
 
 This document is the persistent engineering state for the assignment. I update it as decisions are actually made rather than trying to design the entire solution upfront.
 
+**Standing rule — token economy.** Maximum information in minimum cost, in every response, document and tool call. Tables over prose; lead with the answer. Never compress evidence, exact numbers, `file:line` refs, honest uncertainty, or the reasoning behind a decision — compress the packaging. Terse is the goal; vague is a failure. Defined in `CLAUDE.md`, applies to this file and everything under `docs/`.
+
 ## Current State
 
-**Current phase:** Initial repository review
+**Current phase:** Part 1 — Wave 1 in progress. C1 fixed; C5 is next.
 
 **Completed:**
-- Nothing yet.
+- Read-only review of `app/`: source, config, tests, mock service, load generator.
+- Prioritized Part 1 issue inventory (below).
+- `docs/planning/part-01-production-hardening.md`.
+- **Wave 0 (L7) — toolchain works.** `app/.venv` (Python 3.13) plus `uv 0.12.5`, both **inside WSL Ubuntu**, not on Windows. All verification runs via `wsl.exe`. Windows Python is still 3.11 and `uv` is not on the Windows PATH.
+- **Wave 1 (C1) — HMAC key name and validation.** Write-up: `docs/issues/001-hmac-key-configuration.md`.
 
 **Currently working on:**
-- Understanding the application and assignment requirements from an operations perspective.
+- Nothing in flight. C1 is complete and verified; awaiting go-ahead for C5.
+
+**Repository state:** branch `feature/repo-review` tracking `origin`, two commits. Uncommitted: `WORKLOG.md`, `app/.env.example`, `app/README.md`, `app/src/pokeproxy/config.py`, plus untracked `app/tests/test_config.py`, `docs/issues/001-hmac-key-configuration.md`, `docs/planning/part-01-production-hardening.md`. Nothing committed yet.
 
 **Next:**
-- Build a prioritized Part 1 production-hardening backlog.
-- Select the first issue to investigate and fix.
+1. C5 — structured logging, request/correlation ID, and the single outcome-accounting seam (Wave 2).
+2. Then Wave 3: C2, C3, C4, H1.
+
+**Verified baselines** (measured in WSL, not assumed):
+- Test suite: **16 passed** from `app/` (was 5 before C1).
+- Tests are CWD-dependent — from the repo root, 3 fail with `FileNotFoundError: 'config/rules.json'`. Confirms M7; fix it there.
+- `ruff check .` passes across the project today, so L5 is a *missing gate*, not a backlog of violations.
+- `aioredis.from_url` is **lazy**: the app starts fine with nothing listening on 6379. Input to C4 and M1.
+- App module import alone costs ~3.2 s over the WSL `/mnt/c` filesystem. Re-measure startup timing inside the container in Part 2 rather than trusting numbers taken here.
 
 **Important decisions so far:**
-- None yet.
+- Environment variables are the configuration interface. `.env` stays a local-dev convenience and is never the production mechanism.
+- Redis is a best-effort cache and must **not** gate readiness. A Redis outage should cost latency, not availability.
+- Fix the outcome-accounting *seam* in Part 1; defer the Prometheus backend to Part 4. Instrument once, not twice.
+- Structured logging lands before the behavioural bug fixes, not after. Reasoning is in the planning doc.
+- Standardize on `POKEPROXY_HMAC_KEY` — align the docs to the code rather than the reverse.
+- **Minimum decoded HMAC key length is 16 bytes (128 bits), not 32.** This keeps C1 scoped to configuration: the existing 25-byte dev secret still passes, so `.env.example` and `scripts/load_generator.py` keep their current values and C1 does not spill into the load generator. L1 (a working secret committed to the repo) stays a standalone Wave 5 item.
+- **M4 — a cache hit skips the downstream forward.** The cache becomes a deduplication / idempotency layer rather than a protobuf-decode cache, which is what "avoid re-processing previously seen payloads" actually implies and what makes the Redis dependency earn its place. Consequences are recorded under the M4 open sub-questions below and in the planning doc.
+- **H1 — rules are loaded and validated once at startup.** No per-request disk read, no hot-reload. Invalid config is a startup failure, not a request-time 500. A rules change is a pod restart, which is an honest rollout story for Part 3.
+- Order of work: make it start, make it visible, make it correct, make it survive Kubernetes, then hygiene.
 
 **Open questions:**
-- None recorded yet.
+Sub-questions opened by the M4 decision. All need answers before Wave 3 touches `cache.py`; none of them reopen the decision itself.
+
+- **What does a suppressed duplicate return to the client?** The cache stores the decoded `PokemonJSON`, not the downstream response, so there is no prior result to replay. Either return a deterministic synthetic response (a 200 with an explicit duplicate marker, or 208 Already Reported), or start caching the downstream response as well and replay it. The first is simpler and does not pretend to know what downstream would say this time.
+- **Should the rules config hash be part of the cache key?** Under H1 a rules change is a pod restart — but a payload already inside the dedup window is suppressed *before* routing happens, so the new rules never see it for up to one TTL. Mixing the config hash into the key makes a rules change invalidate dedup automatically. Clean, at the cost of a downstream re-delivery burst on every rules change.
+- **Is 300s the right dedup window, and should it be configurable?** `CACHE_TTL` is hardcoded at `cache.py:11`. Under M4 it stops being an implementation detail and becomes the business-visible dedup window, which argues for making it configuration.
+
+Still open from before:
+
+- **M2 — where the body size limit belongs.** App-level streaming enforcement, or push it to ingress/uvicorn and keep a defence-in-depth check in the app. Decide in Wave 5.
 
 ## Backlog / Later
 
-Items discovered during one Part that should intentionally be handled in a later Part go here.
+Items discovered during the Part 1 review that intentionally belong to a later Part.
 
-- _Empty until the initial review._
+**Part 2 — Infrastructure & Deployment**
+- Downstream URLs in `config/rules.json` are all `http://localhost:8001/pokemon`. These become per-environment ConfigMap values.
+- **H1 consequence:** rules are read once at startup, so a rules ConfigMap change does nothing until the pods restart. The Deployment needs a pod-template checksum annotation over the rules ConfigMap (or an operator like Reloader) so a rules change actually rolls. Without it, a rules update looks applied in git and is silently inert in the cluster.
+- `mock_service` is not in the wheel packaging (`packages = ["src/pokeproxy"]`) and binds `127.0.0.1`. Needs a deliberate containerization decision (L6).
+- `preStop` hook and `terminationGracePeriodSeconds` are the manifest half of graceful shutdown (H7). The app-side hooks land in Part 1.
+- Probe configuration encodes the "Redis does not gate readiness" decision (M1).
+
+**Part 3 — CI/CD & GitOps**
+- `mock_service` keeps received payloads in an in-process list. If it ever runs more than one replica, the E2E check (post through the proxy, then read `/received`) can hit a different pod and see nothing. Pin it to a single replica or the E2E is flaky.
+- `scripts/load_generator.py` is the natural seed for the E2E traffic generator. Its `sys.path.insert` hack and hardcoded default secret should be cleaned so CI can import it.
+- **M4 consequence — the load generator stops generating load.** It picks from 12 fixed payloads (`POKEMON_DATA`, `random.choice` at `load_generator.py:92`), and protobuf serialization of identical field values is byte-identical, so there are exactly 12 distinct body hashes. Once dedup skips the forward, the first dozen requests exercise the downstream path and everything else for the next TTL is suppressed. A 60s run at 10 rps would forward ~12 of 600 requests. The generator needs a varying field (nonce or timestamp) to stay useful for load testing, and Part 4 dashboards will read as near-zero forward rate until it has one.
+- **M4 consequence — the post-deploy E2E must use a unique payload per run**, or flush the dedup key first. Re-running the same E2E payload inside the TTL produces no new downstream delivery, so the check fails on a healthy deployment. This is a correctness requirement for the Part 3 gate, not a nicety.
+- Tests use relative fixture paths (`load_rules("config/rules.json")`) and only pass when CWD is `app/`. Fixed as part of M7 so CI is not CWD-dependent.
+
+**Part 4 — Observability**
+- Replace `/stats` with Prometheus instrumentation, reusing the Part 1 outcome-accounting seam (H4, H5).
+- **M4 consequence:** "duplicate suppressed" must be its own terminal outcome in the seam. Otherwise suppressed traffic is invisible — the same failure class as no-rule-matched today, where a request disappears and the service looks healthy. It also needs to be distinguishable on the dashboard from a genuine drop in inbound traffic.
+- `StatsRegistry` keys on downstream URL via `setdefault` — bounded by the rules file today, but it is an unbounded-cardinality pattern that must not be carried into Prometheus labels (L4).
+- Move operational endpoints (`/stats`, `/metrics`) onto a port the public Service does not expose (M5).
+- If H1 ends up with hot-reload, expose a config hash so I can tell which pods have picked up a rules change.
+
+**Documented, not implemented**
+- M3 — no replay protection on signed payloads. The HMAC covers the body only, so a captured request is valid forever. The fix (signed timestamp inside the HMAC input, bounded acceptance window, nonce cache in Redis) is a protocol change I cannot make unilaterally. Write it up as a known gap.
 
 ---
 
@@ -34,11 +87,52 @@ Items discovered during one Part that should intentionally be handled in a later
 
 ### Initial assessment
 
-_To be written after the repository review._
+Three structural observations, ahead of any individual bug:
+
+1. **It cannot start from its own documentation.** The code requires `POKEPROXY_HMAC_KEY`; the README and `.env.example` both say `POKEPROXY_SECRET`. Nobody has run this from a clean checkout recently. *(Fixed in C1 — the service now starts from `.env.example` verbatim.)*
+2. **It is completely dark.** No `logging` import anywhere in `app/`. The only introspection is `/stats`, and `/stats` is wrong in precisely the way that hides an outage.
+3. **The failure handling is inverted.** The dependency that should degrade gracefully (Redis) is a hard failure; the dependency that should fail fast (a dead downstream) retries forever. That is backwards, and it is the difference between a bad minute and a bad night.
+
+### Prioritized backlog
+
+Wave numbering matches the order of work in `docs/planning/part-01-production-hardening.md`.
+
+| ID | Sev | Issue | Primary evidence | Wave | Status |
+|----|-----|-------|------------------|------|--------|
+| L7 | — | No `.venv`, `uv` not on PATH, local Python is 3.11 vs required 3.13. Nothing verified by execution yet. | environment | 0 | **Resolved** — venv + `uv 0.12.5` exist, but in **WSL**, not Windows. Verification runs via `wsl.exe`. |
+| C1 | Critical | HMAC secret var name matches no docs, and the value has no meaningful validation. `changeme` (6 bytes), `""` (0 bytes) and `abcd efgh` (whitespace silently discarded) all started successfully. A base64 *padding* error did fail at startup, accidentally, as a bare `binascii.Error`. | `config.py:18,23-25`, `.env.example:1`, `README.md:52` | 1 | **Fixed** — `docs/issues/001-hmac-key-configuration.md` |
+| C5 | Critical | No logging of any kind. Every failure path returns JSON and vanishes. No request or correlation ID. | no `logging` import in `app/` | 2 | Open — also pick up the C1 leftover: wrap the startup `ValidationError` so config failures are one clear line, not a 25-line traceback. |
+| C2 | Critical | `while True` retry with no cap and no deadline, a new `AsyncClient` per attempt never closed, `timeout=600.0` overriding the configured timeouts, and `app.state.http_client` left as dead code. | `proxy.py:54-66`, `main.py:24-27` | 3 | Open |
+| C3 | Critical | `redis.keys("pokeproxy:pokemon:*")` on every request, then a Python-side linear scan to find the key a single `GET` would have returned. | `cache.py:18` | 3 | Open |
+| C4 | Critical | Redis calls unguarded, no socket or connect timeouts. A Redis blip becomes a 500 on 100% of traffic; a hung Redis blocks indefinitely. | `proxy.py:142,153`, `main.py:29` | 3 | Open |
+| H1 | High | `rules.json` re-read, re-parsed and re-validated from disk on every request, synchronously, on the event loop. Config errors surface at request time instead of startup. | `proxy.py:155`, `rules.py:110-135` | 3 | Open — startup-only decided |
+| M1 | Medium | `/health` is a hardcoded string. No readiness concept. | `main.py:42-44` | 4 | Open |
+| H7 | High | No graceful shutdown and no readiness flip on SIGTERM. Every rollout drops in-flight requests. | `main.py:16-35` | 4 | Open |
+| H2 | High | Downstream response headers copied verbatim to the client, including framing and hop-by-hop headers. | `proxy.py:89-93` | 4 | Open |
+| H3 | High | Client headers forwarded downstream on a denylist basis. Denylists are always incomplete. | `proxy.py:41-51,22-33` | 4 | Open |
+| H4 | High | `request_count` only increments on success while `error_count` increments on failure, so `error_rate` reads 0.0 during a total outage. `bytes_received` is assigned rather than accumulated. Rejections and no-rule-matched are never counted. | `stats.py:29`, `proxy.py:87,95,101,162` | 4 | Open |
+| H5 | High | `_response_times` grows without bound and `bisect.insort` is O(n) per insert, so memory and CPU degrade with uptime. | `stats.py:15,19` | 4 | Open |
+| H6 | High | Config assumes localhost, relative paths and a loopback bind. None of it survives a container. | `config/rules.json`, `config.py:15`, `mock_service/main.py:34` | 4 / P2 | Open |
+| M2 | Medium | `int(content_length)` unguarded, so a malformed header is a 500. Body is fully buffered *before* the size check, so the 1 MiB limit does not actually limit anything. | `proxy.py:114-126` | 5 | Open |
+| M6 | Medium | `POKEPROXY_PORT` is defined and documented but read by nothing. The real port comes from the uvicorn CLI. | `config.py:20`, `.env.example:3` | 5 | Open |
+| M7 | Medium | Five tests, all on decode/parse/match. Nothing covers `/stream`, HMAC, cache, Redis failure, downstream failure, headers or size limits. | `tests/test_basic.py` | 5 | Open |
+| L1 | Low | A working HMAC secret is committed in `.env.example` and hardcoded as the load generator default. | `.env.example:1`, `load_generator.py:74` | 5 | Open |
+| L2 | Low | Empty-name payloads rejected as "likely garbage input" — a heuristic wearing validation's clothes, with a misleading error message. | `config.py:83-84` | 5 | Open |
+| L3 | Low | Error responses are opaque and uncorrelatable. `{"error": "downstream error"}` gives support nothing to search on. | `proxy.py:96-105,134-137,149-152` | 5 | Open |
+| L5 | Low | `ruff` is configured with a good ruleset and nothing runs it. No type gate despite `# type: ignore` throughout. | `pyproject.toml` | 5 | Open |
+| M4 | Medium | Cache costs a Redis round trip to save a microsecond-scale protobuf decode, and a hit still forwards downstream anyway. | `cache.py`, `proxy.py:161-167` | 3 | Open — dedup semantics decided |
+| M3 | Medium | No replay protection. The HMAC covers the body only. | `proxy.py:36-38` | — | Deferred, document only |
+| M5 | Medium | `/stats` is unauthenticated and leaks internal downstream URLs. | `main.py:47-50` | — | Deferred to Part 4 |
+| L4 | Low | `setdefault` keyed by URL — an unbounded-cardinality pattern. | `stats.py:53` | — | Deferred to Part 4 |
+| L6 | Low | `mock_service` is not in the wheel packaging and imports as a top-level module. | `pyproject.toml` | — | Deferred to Part 2 |
 
 ### Decisions and changes
 
-_To be added as work progresses._
+**C1 — HMAC key configuration (Wave 1).** Standardized on `POKEPROXY_HMAC_KEY` and aligned `.env.example` and the README to it; rejected `AliasChoices` because there is nothing to migrate. Added a `field_validator` on `Settings` enforcing strict base64 and a 16-byte decoded minimum, with an error naming the variable and giving the `openssl` command. `hmac_key` and the validator share one `_decode_hmac_key()` helper.
+
+Verified: 11 new tests (suite 5 → 16); the new module run against HEAD's code fails 9 of 11, confirming real regression cover; the documented Quick Start now reaches `Application startup complete` where it previously exited 3; `POKEPROXY_HMAC_KEY=changeme` exits 3 with the actionable message; `ruff check .` clean.
+
+Deliberately out of scope: `scripts/load_generator.py` is untouched (its 25-byte default still passes the 16-byte floor — that was the reason for choosing 16), and the pydantic traceback is not yet wrapped in a clean startup error. Full reasoning and residual risk in `docs/issues/001-hmac-key-configuration.md`.
 
 ---
 

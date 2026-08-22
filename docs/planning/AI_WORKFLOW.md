@@ -2,6 +2,16 @@
 
 I used Claude Code as a pair-engineering and review tool during this assignment. I intentionally kept implementation decisions incremental so that I could review and understand each change rather than asking the model to solve the assignment end-to-end.
 
+## Operating rule — token economy
+
+Maximum information in minimum cost. This governs every response, document and tool call.
+
+- **Output:** lead with the answer. Tables and lists over prose. No preamble, no restating the question, no summarizing what was just said. Length has to be earned by information, not by thoroughness theater.
+- **Tool calls:** batch independent calls, read the specific lines needed rather than whole files, don't re-verify what is already established.
+- **Never compressed:** evidence, exact numbers, `file:line` references, honest uncertainty, and the reasoning behind a decision I would otherwise have to ask about.
+
+Compress the packaging, never the substance. Terse is the goal; vague is a failure. The rule lives in `CLAUDE.md` so every session inherits it without being re-told.
+
 ## Session model
 
 I used a fresh Claude Code session for each major workstream:

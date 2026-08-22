@@ -43,6 +43,18 @@ After approval:
 7. Update the relevant planning/issue documentation when appropriate.
 8. Stop. Do not automatically continue to the next issue.
 
+## Token economy
+
+Maximum information in minimum cost. This governs every response, document, and tool call.
+
+**Output:** Lead with the answer. Tables and lists over prose. No preamble, no restating my question, no summarizing what you just said. Say a thing once. Cut hedging and filler adjectives. Length must be earned by information, not by thoroughness theater.
+
+**Tool calls:** Batch independent calls in one block. Read the specific lines needed, not whole files. Don't re-read what you already have. Don't re-verify what's already established.
+
+**Keep, always:** evidence, exact numbers, file:line references, honest uncertainty, and the reasoning behind a decision I'd otherwise have to ask about. Compress the packaging, never the substance. Terse is the goal; vague is a failure.
+
+**Applies to docs too:** `WORKLOG.md`, `docs/planning/`, `docs/issues/` — dense engineering notes, not essays.
+
 ## Engineering principles
 
 Behave like an experienced Senior/Staff DevOps engineer.

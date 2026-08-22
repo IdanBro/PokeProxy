@@ -1,5 +1,9 @@
 # <Issue title>
 
+> Written under the token-economy rule (`CLAUDE.md`): maximum information in minimum cost.
+> Tables over prose. Keep evidence, exact numbers, `file:line` refs and honest uncertainty;
+> cut restatement, hedging and filler. Terse is the goal; vague is a failure.
+
 ## Problem
 
 What is wrong in the current implementation? Reference the relevant file/function and describe the behavior precisely.
