@@ -137,6 +137,7 @@ async def access_log(
                 "outcome": "internal_error",
             },
         )
+        request.app.state.stats.record_outcome("internal_error")
         return JSONResponse(
             content={"error": "internal error", "request_id": request_id},
             status_code=500,

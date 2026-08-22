@@ -126,10 +126,7 @@ async def _forward_request(
             headers,
         )
 
-        if resp.status_code >= 400:
-            endpoint_stats.error_count += 1
-
-        endpoint_stats.request_count += 1
+        endpoint_stats.record_request(is_error=resp.status_code >= 400)
 
         request.state.outcome = "forwarded"
         return Response(
@@ -138,14 +135,14 @@ async def _forward_request(
             headers=_forwardable_response_headers(resp.headers),
         )
     except httpx.TimeoutException:
-        endpoint_stats.error_count += 1
+        endpoint_stats.record_request(is_error=True)
         request.state.outcome = "downstream_timeout"
         return JSONResponse(
             content={"error": "downstream timeout"},
             status_code=504,
         )
     except httpx.HTTPError:
-        endpoint_stats.error_count += 1
+        endpoint_stats.record_request(is_error=True)
         request.state.outcome = "downstream_error"
         return JSONResponse(
             content={"error": "downstream error"},
@@ -157,40 +154,53 @@ async def _forward_request(
         endpoint_stats.bytes_sent += len(json_bytes)
 
 
+def _outcome_response(
+    request: Request,
+    stats: StatsRegistry,
+    outcome: str,
+    content: dict[str, object],
+    status_code: int,
+) -> JSONResponse:
+    request.state.outcome = outcome
+    stats.record_outcome(outcome)
+    return JSONResponse(content=content, status_code=status_code)
+
+
 @router.post("/stream")
 async def stream(request: Request) -> Response:
+    stats: StatsRegistry = request.app.state.stats
+
     content_length = request.headers.get("content-length")
     if content_length and int(content_length) > MAX_BODY_SIZE:
-        request.state.outcome = "rejected_too_large"
-        return JSONResponse(
-            content={"error": "payload too large"},
-            status_code=413,
+        return _outcome_response(
+            request, stats, "rejected_too_large", {"error": "payload too large"}, 413
         )
 
     body = await request.body()
     if len(body) > MAX_BODY_SIZE:
-        request.state.outcome = "rejected_too_large"
-        return JSONResponse(
-            content={"error": "payload too large"},
-            status_code=413,
+        return _outcome_response(
+            request, stats, "rejected_too_large", {"error": "payload too large"}, 413
         )
 
     secret: bytes = request.app.state.hmac_key
-    stats: StatsRegistry = request.app.state.stats
     redis_client = request.app.state.redis
 
     signature = request.headers.get("X-Grd-Signature", "")
     if not signature:
-        request.state.outcome = "rejected_signature_missing"
-        return JSONResponse(
-            content={"error": "invalid signature"},
-            status_code=401,
+        return _outcome_response(
+            request,
+            stats,
+            "rejected_signature_missing",
+            {"error": "invalid signature"},
+            401,
         )
     if not verify_signature(secret, body, signature):
-        request.state.outcome = "rejected_signature_invalid"
-        return JSONResponse(
-            content={"error": "invalid signature"},
-            status_code=401,
+        return _outcome_response(
+            request,
+            stats,
+            "rejected_signature_invalid",
+            {"error": "invalid signature"},
+            401,
         )
 
     body_hash = hashlib.sha256(body).hexdigest()
@@ -203,23 +213,18 @@ async def stream(request: Request) -> Response:
         try:
             pokemon = decode_pokemon(body)
         except ValueError:
-            request.state.outcome = "rejected_protobuf"
-            return JSONResponse(
-                content={"error": "invalid protobuf"},
-                status_code=400,
+            return _outcome_response(
+                request, stats, "rejected_protobuf", {"error": "invalid protobuf"}, 400
             )
         await cache_pokemon(redis_client, cache_key, pokemon)
 
     matched_rule = match_pokemon(pokemon, request.app.state.rules)
 
     if matched_rule is None:
-        # Returns 200 with an empty body, so without this label a rules
-        # misconfiguration dropping all traffic is invisible.
-        request.state.outcome = "no_rule_matched"
-        return JSONResponse(content={}, status_code=200)
+        return _outcome_response(request, stats, "no_rule_matched", {}, 200)
 
     endpoint_stats = stats.get(matched_rule.url)
-    endpoint_stats.bytes_received = len(body)
+    endpoint_stats.bytes_received += len(body)
 
     original_headers: dict[str, str] = dict(request.headers)
 

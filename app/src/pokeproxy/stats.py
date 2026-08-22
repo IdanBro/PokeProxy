@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import bisect
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -12,11 +11,14 @@ class EndpointStats:
     total_response_time: float = 0.0
     bytes_received: int = 0
     bytes_sent: int = 0
-    _response_times: list[float] = field(default_factory=list)
+
+    def record_request(self, *, is_error: bool) -> None:
+        self.request_count += 1
+        if is_error:
+            self.error_count += 1
 
     def record_response_time(self, elapsed: float) -> None:
         self.total_response_time += elapsed
-        bisect.insort(self._response_times, elapsed)
 
     @property
     def avg_response_time(self) -> float:
@@ -27,13 +29,6 @@ class EndpointStats:
     @property
     def error_rate(self) -> float:
         return self.error_count / self.request_count if self.request_count else 0.0
-
-    def percentile(self, p: float) -> float:
-        if not self._response_times:
-            return 0.0
-        idx = int(len(self._response_times) * p / 100)
-        idx = min(idx, len(self._response_times) - 1)
-        return self._response_times[idx]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -48,9 +43,16 @@ class EndpointStats:
 @dataclass
 class StatsRegistry:
     endpoints: dict[str, EndpointStats] = field(default_factory=dict)
+    outcomes: dict[str, int] = field(default_factory=dict)
 
     def get(self, url: str) -> EndpointStats:
         return self.endpoints.setdefault(url, EndpointStats())
 
+    def record_outcome(self, outcome: str) -> None:
+        self.outcomes[outcome] = self.outcomes.get(outcome, 0) + 1
+
     def to_dict(self) -> dict[str, Any]:
-        return {url: stats.to_dict() for url, stats in self.endpoints.items()}
+        return {
+            "endpoints": {url: stats.to_dict() for url, stats in self.endpoints.items()},
+            "outcomes": dict(self.outcomes),
+        }

@@ -6,7 +6,7 @@ This document is the persistent engineering state for the assignment. I update i
 
 ## Current State
 
-**Current phase:** Part 1 — Wave 3 done, Wave 4 in progress. C1, C5, C2, C3, C4, H1, M1+H7, H2+H3 fixed.
+**Current phase:** Part 1 — closing out the audit's SHOULD FIX list before declaring Part 1 done. C1, C5, C2, C3, C4, H1, M1+H7, H2+H3, H4+H5 fixed. Remaining: L3, M2, M4, M7-CWD, then defer everything else per the audit.
 
 **Completed:**
 - Read-only review of `app/`: source, config, tests, mock service, load generator.
@@ -21,20 +21,42 @@ This document is the persistent engineering state for the assignment. I update i
 - **Wave 3, part 4 (H1) — rules loaded and validated once at startup, not per request.** Write-up: `docs/issues/006-rules-reloaded-per-request.md`.
 - **Wave 4, part 1 (M1 + H7) — real `/ready` endpoint split from `/health`, flipped false at the start of shutdown.** Write-up: `docs/issues/007-liveness-readiness-split.md`.
 - **Wave 4, part 2 (H2 + H3) — header hygiene in both directions.** Request headers to downstream now go through an allowlist (currently empty); response headers to the client have hop-by-hop headers stripped. Write-up: `docs/issues/008-header-hygiene.md`.
+- **Wave 4, part 3 (H4 + H5) — outcome accounting fixed, unbounded response-time storage removed.** `EndpointStats.record_request(is_error)` makes request/error counting atomic, so `error_rate` can no longer read 0.0 during a total outage. Rejections and `no_rule_matched` now count via a new outcome-keyed `StatsRegistry.record_outcome`. `_response_times`/`percentile()` deleted entirely (not bounded) — percentiles are Part 4's job (Prometheus histograms), `/stats` keeps only `avg_response_time` (already O(1) memory). Write-up: `docs/issues/009-outcome-accounting-and-unbounded-stats.md`.
 
 **Currently working on:**
-- Nothing in flight. H2+H3 is complete and verified; awaiting go-ahead for the last Wave 4 pair (H4 + H5).
+- Nothing in flight. H4+H5 complete and verified — closes the last Wave 4 item and the audit's #1 SHOULD FIX (the exact "`/stats` lies during an outage" bug from the original Part 1 assessment). Next: L3, M2, M4, M7-CWD, per the user's direction to fix all SHOULD FIX items before declaring Part 1 done.
 
-**Repository state:** branch `feature/repo-review` tracking `origin`. Commits through M1+H7 pushed (`819bdba`). H2+H3 uncommitted.
+**Repository state:** branch `feature/repo-review` tracking `origin`. Commits through H2+H3 pushed (`63d9871`). H4+H5 uncommitted, along with the audit doc updates from the previous session.
 
 **Next:**
-1. Wave 4: H4 + H5 (stats accounting), then Wave 5.
+1. L3 — useful/correlatable error messages (assignment-named requirement).
+2. M2 — body size limit doesn't actually limit (resource exhaustion).
+3. M4 — implement the dedup decision (cache hit skips downstream forward), already designed in the planning doc but never shipped.
+4. M7-CWD — fix the CWD-relative config path so a wrong working directory doesn't take down the whole test suite (was 3 failing tests pre-H1, now 25).
+5. Then explicitly re-defer every remaining NICE TO HAVE (L1, L2, L5, M6, H6) with reasoning, and declare Part 1 done.
+
+**Part 1 completion audit (2026-08-22):** Full requirement-by-requirement pass against `README_HOME_ASSIGNMENT.md` Part 1 and this doc's own "Definition of done" (`docs/planning/part-01-production-hardening.md`). Verification run: `ruff check .` clean, `pytest -q` from `app/` — **73 passed**; from repo root — 25 fail (CWD-dependence, see Verified baselines).
+
+*Satisfied:* reliability fixes for every issue actually fixed (C1-C5, H1-H3) each with a regression test and a `docs/issues/` write-up; structured logging; configuration hygiene for the HMAC key specifically; graceful shutdown (app-side, K8s-side correctly scoped to Part 2).
+
+*Fixed since the audit:*
+- **The outcome-accounting seam** — H4+H5 fixed 2026-08-22. See Decisions and changes below and `docs/issues/009-outcome-accounting-and-unbounded-stats.md`.
+
+*Not yet satisfied, despite being named or self-committed:*
+- **"Useful error messages"** (assignment's own words) — L3 still open. Response bodies (`{"error": "downstream error"}`) carry no `request_id`, inconsistent with `main.py`'s own `internal_error` handler, which does.
+- M2 (body size limit doesn't actually limit — resource exhaustion) — still open.
+- M4 (dedup) — decided in the planning doc, never implemented; `cache.py`/`proxy.py` confirmed unchanged. Planning doc's Part 3/4 "M4 consequences" describe a future state, not current behavior.
+- M7 — re-scoped (see Verified baselines): test-coverage claim mostly disproven by the incremental suite, but CWD-dependence blast radius grew from 3→25 failing tests after H1.
+
+*Deliberately deferred, with reasoning already on record — no gap:* K8s-side of graceful shutdown (H7, Backlog/Part 2), rules ConfigMap live-reload (H1 consequence, Backlog/Part 2), H6 config-assumes-localhost (fundamentally a Part 2 deployment-topology decision), M3 replay protection (documented-only, protocol change), M5 `/stats` auth (Backlog/Part 4), L4 unbounded label cardinality (Backlog/Part 4), L6 `mock_service` packaging (Backlog/Part 2), L5 ruff-in-CI (natural Part 3 fit).
+
+Full findings, severity, and reasoning: see the response given alongside this audit (not persisted verbatim here — token economy).
 
 **C4 closed both deferred test-isolation reasons from C5.** `no_cache` in `test_logging.py` is no longer load-bearing for correctness (a Redis-down request now degrades instead of 500ing) — kept anyway for test speed and to keep unit tests off real network calls. Confirmed by a real end-to-end run with no mocking: unreachable Redis produced two `WARNING` log lines and a clean `502 downstream_error` in 727.8ms, not a crash.
 
 **Verified baselines** (measured in WSL, not assumed):
-- Test suite: **73 passed** from `app/` (5 → 16 after C1 → 28 after C5 → 38 after C2 → 44 after C3 → 48 after C4 → 56 after the C2/C4 config-naming follow-up → 62 after H1 → 67 after M1+H7 → 73 after H2+H3).
-- Tests are CWD-dependent — from the repo root, 3 fail with `FileNotFoundError: 'config/rules.json'`. Confirms M7; fix it there.
+- Test suite: **86 passed** from `app/` (5 → 16 after C1 → 28 after C5 → 38 after C2 → 44 after C3 → 48 after C4 → 56 after the C2/C4 config-naming follow-up → 62 after H1 → 67 after M1+H7 → 73 after H2+H3 → 87 after H4+H5 → 86 after removing percentile tracking as a follow-up).
+- Tests are CWD-dependent — from the repo root, **25 of 73 fail** (re-measured 2026-08-22; was 3 of 48 before H1). H1 made rules-loading a hard startup `SystemExit` on a bad path, so a CWD-relative `config/rules.json` miss now takes down every test that constructs `TestClient(app)`, not just the 3 rule-loading tests. Won't hit production (containers get a fixed `WORKDIR`), but will hit Part 3 CI if the runner's CWD isn't exactly `app/`. Confirms M7, blast radius increased — fix before Part 3 builds on top of it.
 - `ruff check .` passes across the project today, so L5 is a *missing gate*, not a backlog of violations.
 - `aioredis.from_url` is **lazy**: the app starts fine with nothing listening on 6379. Input to C4 and M1.
 - App module import alone costs ~3.2 s over the WSL `/mnt/c` filesystem. Re-measure startup timing inside the container in Part 2 rather than trusting numbers taken here.
@@ -118,17 +140,17 @@ Wave numbering matches the order of work in `docs/planning/part-01-production-ha
 | H7 | High | No graceful shutdown and no readiness flip on SIGTERM. Every rollout drops in-flight requests. | `main.py:60-98` (pre-fix) | 4 | **Fixed (app-side half)** — `docs/issues/007-liveness-readiness-split.md`. K8s-side `preStop`/grace-period wiring is Part 2 |
 | H2 | High | Downstream response headers copied verbatim to the client, including framing and hop-by-hop headers. | `proxy.py:132` (pre-fix) | 4 | **Fixed** — `docs/issues/008-header-hygiene.md` |
 | H3 | High | Client headers forwarded downstream on a denylist basis. Denylists are always incomplete. | `proxy.py:34-45` (pre-fix) | 4 | **Fixed** — switched to an allowlist, `docs/issues/008-header-hygiene.md` |
-| H4 | High | `request_count` only increments on success while `error_count` increments on failure, so `error_rate` reads 0.0 during a total outage. `bytes_received` is assigned rather than accumulated. Rejections and no-rule-matched are never counted. | `stats.py:29`, `proxy.py:87,95,101,162` | 4 | Open |
-| H5 | High | `_response_times` grows without bound and `bisect.insort` is O(n) per insert, so memory and CPU degrade with uptime. | `stats.py:15,19` | 4 | Open |
+| H4 | High | `request_count` only increments on success while `error_count` increments on failure, so `error_rate` reads 0.0 during a total outage. `bytes_received` is assigned rather than accumulated. Rejections and no-rule-matched are never counted. | `stats.py:29`, `proxy.py:87,95,101,162` (pre-fix) | 4 | **Fixed** — `docs/issues/009-outcome-accounting-and-unbounded-stats.md` |
+| H5 | High | `_response_times` grows without bound and `bisect.insort` is O(n) per insert, so memory and CPU degrade with uptime. | `stats.py:15,19` (pre-fix) | 4 | **Fixed** — bounded to 1000 samples, `docs/issues/009-outcome-accounting-and-unbounded-stats.md` |
 | H6 | High | Config assumes localhost, relative paths and a loopback bind. None of it survives a container. | `config/rules.json`, `config.py:15`, `mock_service/main.py:34` | 4 / P2 | Open |
 | M2 | Medium | ~~`int(content_length)` unguarded, so a malformed header is a 500.~~ **First half disproved:** measured during C5 — uvicorn's httptools parser rejects `Content-Length: abc` with its own 400 before the handler runs, so `int()` never sees a non-digit string. Second half stands: body is fully buffered *before* the size check, so the 1 MiB limit does not actually limit anything. | `proxy.py:114-126` | 5 | Open — re-derive before fixing |
 | M6 | Medium | `POKEPROXY_PORT` is defined and documented but read by nothing. The real port comes from the uvicorn CLI. | `config.py:20`, `.env.example:3` | 5 | Open |
-| M7 | Medium | Five tests, all on decode/parse/match. Nothing covers `/stream`, HMAC, cache, Redis failure, downstream failure, headers or size limits. | `tests/test_basic.py` | 5 | Open |
+| M7 | Medium | ~~Five tests, all on decode/parse/match. Nothing covers `/stream`, HMAC, cache, Redis failure, downstream failure, headers or size limits.~~ **Largely disproven by the incremental regression suite** — each Wave 1-4 fix added its own coverage; 73 tests now span `/stream`, HMAC, cache hit/miss/failure, Redis failure, downstream timeout/error, headers (both directions), size limits, readiness, and startup failure. **What's actually still missing:** (1) no test drives a real cache **hit** through `/stream` end-to-end (only `cache.py` unit tests and always-miss stubs); (2) the CWD-dependence itself (see Verified baselines) is the one real open item under this ID. | `tests/test_basic.py` (pre-fix framing) | 5 | Open — re-scoped, not the original finding |
 | L1 | Low | A working HMAC secret is committed in `.env.example` and hardcoded as the load generator default. | `.env.example:1`, `load_generator.py:74` | 5 | Open |
 | L2 | Low | Empty-name payloads rejected as "likely garbage input" — a heuristic wearing validation's clothes, with a misleading error message. | `config.py:83-84` | 5 | Open |
 | L3 | Low | Error responses are opaque and uncorrelatable. `{"error": "downstream error"}` gives support nothing to search on. | `proxy.py:96-105,134-137,149-152` | 5 | Open |
 | L5 | Low | `ruff` is configured with a good ruleset and nothing runs it. No type gate despite `# type: ignore` throughout. | `pyproject.toml` | 5 | Open |
-| M4 | Medium | Cache costs a Redis round trip to save a microsecond-scale protobuf decode, and a hit still forwards downstream anyway. | `cache.py`, `proxy.py:161-167` | 3 | Open — dedup semantics decided |
+| M4 | Medium | Cache costs a Redis round trip to save a microsecond-scale protobuf decode, and a hit still forwards downstream anyway. | `cache.py`, `proxy.py:199-211` | 3 | **Open — decided but not implemented.** Confirmed 2026-08-22: `cache.py`/`proxy.py` unchanged since the M4 decision; a hit still forwards. Planning doc's Part 3/4 "M4 consequences" describe a future state, not current behavior — do not build Part 3/4 assuming dedup exists |
 | M3 | Medium | No replay protection. The HMAC covers the body only. | `proxy.py:36-38` | — | Deferred, document only |
 | M5 | Medium | `/stats` is unauthenticated and leaks internal downstream URLs. | `main.py:47-50` | — | Deferred to Part 4 |
 | L4 | Low | `setdefault` keyed by URL — an unbounded-cardinality pattern. | `stats.py:53` | — | Deferred to Part 4 |
@@ -171,6 +193,12 @@ Verified: 5 new tests (`test_readiness.py` ×4, one in `test_logging.py`; 62 →
 **H2 + H3 — header hygiene in both directions (Wave 4).** `STRIP_HEADERS` (a denylist) is replaced by `ALLOWED_FORWARD_HEADERS` (an allowlist), currently empty — no original client header reaches downstream; the proxy already builds every header downstream needs itself (`Content-Type`, `X-Grd-Reason`, `X-Request-ID`), and nothing downstream reads anything else (confirmed: `mock_service` only reads `X-Grd-Reason`). New `_forwardable_response_headers` strips the RFC 7230 hop-by-hop set plus `Content-Length`/`Content-Encoding` from the downstream response before it reaches the client — kept as a corrected blocklist rather than an allowlist on this side, since the response comes from a trusted, configured downstream URL and an allowlist there risks silently dropping legitimate business headers.
 
 Verified: 6 new tests (`test_headers.py`, 67 → 73) — unit tests on both filter functions directly, plus two end-to-end tests through `TestClient` with a mocked downstream confirming `Authorization`/`Cookie` never reach downstream while `X-Grd-Reason` does, and a mocked downstream's `Connection` header never reaches the client while a custom header does. `ruff check .` clean. Full detail in `docs/issues/008-header-hygiene.md`.
+
+**H4 + H5 — outcome accounting fixed, unbounded response-time storage removed (Wave 4).** New `EndpointStats.record_request(is_error: bool)` replaces two independently-incremented counters with one atomic call, used at all three exit points of `_forward_request` — `error_count <= request_count` can no longer drift apart, closing the exact bug where `error_rate` read `0.0` during a total downstream outage. `bytes_received` changed from `=` to `+=`. New `StatsRegistry.record_outcome(outcome: str)` gives rejections and `no_rule_matched` — which have no downstream URL to key on — their own flat `{outcome: count}` map, via a new `_outcome_response()` helper in `proxy.py` that collapses every rejection branch into one call (mirrors C5's `request.state.outcome` seam, applied to accounting). `main.py`'s `internal_error` handler gets the same one-line treatment. `StatsRegistry.to_dict()` shape changes to `{"endpoints": {...}, "outcomes": {...}}` — no test or documented consumer relied on the old flat shape.
+
+**Follow-up, same session — `_response_times`/`percentile()` deleted, not bounded.** First pass bounded the list to `deque(maxlen=1000)`. User pushed back: percentiles belong to Prometheus/Grafana in Part 4 (`histogram_quantile()` over real histogram buckets), and a hand-rolled bounded sample was complexity the app doesn't need to own for a capability with a known short shelf life. Deleted the structure and the method entirely instead of bounding it. `avg_response_time` untouched — it was already O(1) memory (`total_response_time`/`request_count`) and was never the source of the H5 bug.
+
+Verified: 14 new tests (`test_stats.py`, 73 → 87) — unit coverage on both data structures, plus end-to-end proof through `TestClient` that 3 simulated downstream failures in a row now produce `error_rate == 1.0`, not `0.0`; a rejected request and a `no_rule_matched` request are both counted by outcome; an unhandled exception is counted as `internal_error`; `bytes_received` accumulates across two requests instead of being overwritten. `ruff check .` clean. Full detail in `docs/issues/009-outcome-accounting-and-unbounded-stats.md`.
 
 **C5 — structured logging (Wave 2).** stdlib `logging` plus a JSON formatter in a new `logging_config.py`; no new dependency, and one setup unifies uvicorn's own output instead of leaving it plaintext alongside ours. Uvicorn's access log is replaced by our own middleware line because it cannot carry a correlation ID, latency or outcome. Correlation via `X-Request-ID` — deliberately the infrastructure convention rather than an `X-Grd-*` name, so the trace survives the ingress. Handlers label `request.state.outcome`; the middleware is the single place that reads it and emits one access line. Unhandled exceptions become a JSON 500 carrying the request ID rather than a raw ASGI traceback. Also folded in the C1 leftover: bad config is now one CRITICAL line.
 

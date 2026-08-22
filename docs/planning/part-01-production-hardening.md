@@ -101,10 +101,14 @@ Recorded here so I do not re-litigate them:
 
 ## Definition of done for Part 1
 
-- Service starts from `.env.example` with no edits, and fails loudly and specifically when configuration is wrong.
-- Structured logs on stdout with a correlation ID on every request and every failure path.
-- Redis down means degraded latency, not 500s. Downstream down means a bounded, correctly-coded error, not a hang.
-- Shutdown drains rather than hangs.
-- Every fix has a regression test that fails without it.
-- Every fix has a write-up under `docs/issues/`.
-- Anything not verified by execution is explicitly labelled as not verified.
+- Service starts from `.env.example` with no edits, and fails loudly and specifically when configuration is wrong. **Met (C1, H1).**
+- Structured logs on stdout with a correlation ID on every request and every failure path. **Met (C5).**
+- Redis down means degraded latency, not 500s. Downstream down means a bounded, correctly-coded error, not a hang. **Met (C4, C2).**
+- Shutdown drains rather than hangs. **Met, app-side (M1+H7).** K8s-side (`preStop`, grace period) is correctly Part 2 scope, not a Part 1 gap.
+- Every fix has a regression test that fails without it. **Met** for every issue actually fixed (C1-C5, H1, M1+H7, H2+H3) — 73 tests, verified `pytest -q` from `app/`.
+- Every fix has a write-up under `docs/issues/`. **Met** — 8 write-ups (001-008) cover all 10 fixed issues (two are intentionally combined write-ups: M1+H7, H2+H3).
+- Anything not verified by execution is explicitly labelled as not verified. **Met** for what's documented so far.
+
+### Audit note (2026-08-22)
+
+This "Definition of done" covers the changes actually made through H2+H3 — it does **not** mean the Wave 4/5 backlog this same planning doc created is empty. A full requirement-by-requirement audit against `README_HOME_ASSIGNMENT.md` found several assignment-named or self-committed items still open: H4 (outcome-accounting seam — explicitly promised above and in WORKLOG "Important decisions"), H5 (unbounded memory growth), L3 ("useful error messages" — named directly in the assignment), M2 (body size limit doesn't limit), and M4 (dedup — decided in this document but never implemented in code; the Part 3/4 "M4 consequences" sections below describe a state the code is not yet in). M7's original finding is largely disproven by the incremental test suite, but re-scoped: H1 turned a CWD-relative config-path bug into a 25-of-73 test failure when run from the repo root instead of `app/` (was 3-of-48 before H1) — safe in production (fixed container `WORKDIR`) but a real risk for Part 3 CI. Full severity breakdown given to the user alongside this audit, not duplicated here.
