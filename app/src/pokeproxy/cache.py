@@ -11,26 +11,18 @@ if TYPE_CHECKING:
 CACHE_TTL = 300  # 5 minutes
 
 
-async def get_cached_pokemon(
-    redis: aioredis.Redis, cache_key: str
-) -> dict | None:
-    """Fetch a cached Pokemon JSON dict from Redis."""
-    keys = await redis.keys("pokeproxy:pokemon:*")
-    for key in keys:
-        if (key.decode() if isinstance(key, bytes) else key) == cache_key:
-            data = await redis.get(key)
-            if data is not None:
-                return json.loads(data)
-    return None
+async def get_cached_pokemon(redis: aioredis.Redis, cache_key: str) -> dict | None:
+    data = await redis.get(cache_key)
+    if data is None:
+        return None
+    return json.loads(data)
 
 
 async def cache_pokemon(
     redis: aioredis.Redis, cache_key: str, pokemon: PokemonJSON
 ) -> None:
-    """Cache a Pokemon JSON representation in Redis."""
     await redis.set(cache_key, pokemon.model_dump_json(), ex=CACHE_TTL)
 
 
 def make_cache_key(body_hash: str) -> str:
-    """Create a cache key from a body hash."""
     return f"pokeproxy:pokemon:{body_hash}"
