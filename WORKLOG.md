@@ -6,7 +6,7 @@ This document is the persistent engineering state for the assignment. I update i
 
 ## Current State
 
-**Current phase:** **Part 2 — Infrastructure & Deployment, step 1 of 10 done.** Design agreed and recorded in `docs/planning/part-02-infrastructure-deployment.md`; the Part 2 section below carries decisions and measured results. Branch `feature/infra-and-deployment`. Part 1 is functionally complete (detail retained below).
+**Current phase:** **Part 2 — Infrastructure & Deployment, steps 1–2 of 10 done.** Design agreed and recorded in `docs/planning/part-02-infrastructure-deployment.md`; the Part 2 section below carries decisions and measured results. Branch `feature/infra-and-deployment`. Part 1 is functionally complete (detail retained below).
 
 **Part 1 (complete) — both final-audit SHOULD FIX findings closed.** R1 (retry attempt-timeout, `docs/issues/012-retry-attempt-timeout.md`) and D1 (consolidated known-gaps write-up, `docs/issues/000-known-gaps.md`) are fixed. 15 issue IDs now fixed across 12 changes, 13 write-ups, **101 tests** passing from `app/` and the repo root, `ruff` clean. R2, R3, R4 (nice to have, from the same audit) and the pre-existing NICE TO HAVE backlog (L1, L2, L5, M6, H6) remain open, tracked in `docs/issues/000-known-gaps.md`. Part 1 is functionally complete; Part 2 not started.
 
@@ -28,7 +28,7 @@ This document is the persistent engineering state for the assignment. I update i
 - **Wave 5 (M7-CWD) — test suite no longer depends on the invoking shell's working directory.** New `app/tests/conftest.py` pins CWD to `app/` via `pytest_configure()`, computed from the test files' own location. Verified from three different working directories (`app/`, repo root, `/tmp`) — 94/94 every time. Write-up: `docs/issues/011-test-suite-cwd-dependence.md`.
 
 **Currently working on:**
-- Part 2, stopped after step 1 (Docker image) for approval of step 2. R2, R3 and the pre-existing NICE TO HAVE items are open and tracked in `docs/issues/000-known-gaps.md`. **R4 and M6 are step 2's scope**, not open-ended backlog.
+- Part 2, stopped after step 2 (config preflight entrypoint, closing R4 and M6) for review before step 3. R2, R3 and the pre-existing NICE TO HAVE items are open and tracked in `docs/issues/000-known-gaps.md`.
 
 **Repository state:** branch `feature/infra-and-deployment`, based on `395479c`. Untracked as of this entry: `app/Dockerfile`, `app/.dockerignore`, `docs/planning/part-02-infrastructure-deployment.md`. Nothing modified, nothing committed.
 
@@ -43,8 +43,8 @@ This document is the persistent engineering state for the assignment. I update i
 **Why M2 deferred rather than fixed:** user's explicit call, consistent with the H5 percentile-removal precedent — this class of protection is also achievable at the ingress/reverse-proxy layer in Part 2 (e.g., an Ingress `client_max_body_size`-equivalent), which is the more standard place production systems put it and rejects before the request even reaches this process. Recorded as a Part 2 addition below (defense-in-depth, not a replacement for the app-level fix, which stays scoped and ready if picked back up first).
 
 **Next:**
-1. Part 2 step 2 — `src/pokeproxy/__main__.py` config preflight, closing R4 (config failure emits the intended `CRITICAL` line *and then* uvicorn's ~20-line `SystemExit` traceback) and M6 (`POKEPROXY_PORT` is documented but nothing reads it). First step of Part 2 that touches application code, so it needs regression tests and a full suite re-run from three working directories.
-2. Remaining NICE TO HAVE items (L1, L2, L5, R2, R3) stay tracked in `docs/issues/000-known-gaps.md` and don't block Part 2. H6 closes in steps 3/5, L6 in step 3, M2's ingress half in step 8.
+1. Part 2 step 3 — `Dockerfile.mock` + `/health` on `mock_service` (L6), pending review of step 2.
+2. Remaining NICE TO HAVE items (L1, L2, L5, R2, R3) stay tracked in `docs/issues/000-known-gaps.md` and don't block Part 2. H6 closes in step 5, M2's ingress half in step 8.
 
 **R1 — per-attempt HTTP timeout now less than the retry deadline (final audit fix).** `Settings.forward_attempt_timeout_seconds` (`FORWARD_ATTEMPT_TIMEOUT_SECONDS`, default 3.0) replaces the hardcoded `read=10.0`/`write=10.0` in the shared `httpx.AsyncClient`, which previously equalled `FORWARD_DEADLINE_SECONDS` and let one slow attempt consume the whole retry budget. New `Settings.model_validator` rejects `attempt_timeout >= deadline` at startup by name, so the exact bug can't be reintroduced via misconfiguration. `main.py` gained `_build_http_client(settings)` so the client construction is independently testable. Live re-probe against the same black-hole socket used in the audit: **3 of 3 attempts in 9.70s**, was 1 of 3 in 10.17s. New `test_retry_timeout.py` uses a real TCP server (a custom `httpx` transport bypasses timeout enforcement entirely) — surfaced that Python 3.13's `asyncio.Server.wait_closed()` also waits for already-accepted connections' handlers to finish, so the test's hung-server fixture cancels its handler tasks explicitly rather than waiting on them. 7 new tests (94 → 101): 5 in `test_config.py`, 2 in `test_retry_timeout.py`. `ruff check .` clean. Full detail in `docs/issues/012-retry-attempt-timeout.md`.
 
@@ -296,6 +296,27 @@ Startup at 2.55s contradicts the ~3.2s module-import figure from Part 1, as expe
 No Python changed in step 1, so the test suite was not re-run.
 
 Base images are pinned by tag, not digest. Digest pinning is stronger and belongs in Part 3 once there is a bot to bump them.
+
+**Step 2 (config preflight entrypoint) — done 2026-08-23.** New `src/pokeproxy/__main__.py`: reuses `main.py`'s existing `_load_settings()`, then hands off to `uvicorn.run(..., log_config=None)`. `Dockerfile` `CMD` → `["python", "-m", "pokeproxy"]`. Closes **R4** (bad config previously produced the intended `CRITICAL` line *and then* uvicorn's own ~20-line lifespan `SystemExit` traceback — validating before `uvicorn.run()` starts removes the second part) and **M6** (`POKEPROXY_PORT` was validated and documented but nothing read it; the entrypoint is the one place that now does).
+
+`log_config=None` is load-bearing: `pokeproxy.main`'s import-time `setup_logging()` clears the `uvicorn`/`uvicorn.error`/`uvicorn.access` handlers and sets `propagate=True` so their records reach the JSON handler on root. `uvicorn.run()` left at its default would call its own `dictConfig()` afterward and silently reinstall handlers with `propagate=False`, undoing that. Caught by a dedicated test and confirmed live — uvicorn's own startup lines still render as JSON in the container.
+
+Also added `.gitattributes` at the repo root (`eol=lf` for `*.sh`, `Dockerfile*`, `*.yaml/.yml`, `Makefile`) — folded in here rather than deferred, since `git add` warned "LF will be replaced by CRLF" on every file in step 1's commit, and a CRLF `.sh` fails with `bad interpreter: /bin/bash^M` under WSL or in a container, which is exactly the failure mode Part 5's bootstrap scripts would hit.
+
+Five new tests in `tests/test_entrypoint.py` (`uvicorn.run` mocked, no real port bound): bad config exits before `uvicorn.run` is called; a custom `POKEPROXY_PORT` reaches the `port` kwarg; default is 8000; app import string is `"pokeproxy.main:app"`; `log_config=None` is passed.
+
+Verified by execution:
+
+| Check | Result |
+|---|---|
+| `ruff check .` | All checks passed |
+| `pytest -q` from `app/`, repo root, `/tmp` | **106 passed** each time (101 → 106) — M7-CWD independence survives the new entrypoint |
+| Container, `POKEPROXY_HMAC_KEY` unset | **1 line** of output, `CRITICAL configuration invalid, refusing to start`, exit **1** |
+| Container, `POKEPROXY_PORT=9001` | `/health` answers on 9001; log line reads `Uvicorn running on http://0.0.0.0:9001` |
+| Container, SIGTERM on that run | clean drain, exit 0, 1.21s wall |
+| JSON logging through the new path | uvicorn's own lines still JSON — no regression from `log_config=None` |
+
+No change to `main.py`, `proxy.py`, `config.py`, or any request-path code — entrypoint-only.
 
 ---
 

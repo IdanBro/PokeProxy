@@ -65,7 +65,7 @@ The general rule "don't hand-roll infrastructure" is right, and for anything sta
 | # | Step | State |
 |---|---|---|
 | 1 | `app/Dockerfile` + `.dockerignore`; build and verify standalone | **Done** |
-| 2 | `src/pokeproxy/__main__.py` config preflight (R4 + M6) | Not started |
+| 2 | `src/pokeproxy/__main__.py` config preflight (R4 + M6) | **Done** |
 | 3 | `Dockerfile.mock` + `/health` on `mock_service` (L6) | Not started |
 | 4 | Helm chart skeleton: `Chart.yaml`, values, namespace + PSA, ServiceAccounts | Not started |
 | 5 | Workload templates: redis, mock, pokeproxy — probes, resources, securityContext, `checksum/config`, rules via `toJson` (H6, H7) | Not started |
@@ -138,3 +138,30 @@ Ten-case functional probe against the running container, driven from a throwaway
 The 2.55s startup contradicts the ~3.2s module-import figure measured over WSL's `/mnt/c` in Part 1, which is what I expected — that number was filesystem overhead, not the application. The `startupProbe` budget (30 × 1s) is set against the container figure.
 
 `ghcr.io/astral-sh/uv:0.12.5` and `python:3.13-slim-bookworm` are pinned by tag, not digest. Digest pinning is stronger and is the right Part 3 addition once there is a bot to bump them.
+
+## Step 2 — result
+
+New `src/pokeproxy/__main__.py`: constructs `Settings` via `main.py`'s existing `_load_settings()`, then hands off to `uvicorn.run("pokeproxy.main:app", host="0.0.0.0", port=settings.pokeproxy_port, log_config=None)`. `Dockerfile`'s `CMD` switched from the uvicorn CLI to `["python", "-m", "pokeproxy"]`.
+
+`log_config=None` is load-bearing, not cosmetic. `pokeproxy.main` installs the JSON logging config as an import-time side effect — clearing `uvicorn`/`uvicorn.error`/`uvicorn.access` handlers, setting `propagate=True`, disabling `uvicorn.access`. Importing `_load_settings` from `__main__.py` triggers that import before `uvicorn.run()` is called. Left at its default, `uvicorn.run()` calls its own `logging.config.dictConfig()`, which reinstalls handlers with `propagate=False` on those three loggers and silently undoes the JSON setup. Caught by `test_uvicorn_logging_config_is_disabled` and confirmed by a real container run — uvicorn's own `Started server process` / `Application startup complete` lines still render as JSON.
+
+Also fixes R4 and M6:
+- **R4.** `_load_settings()` now runs and can fail *before* `uvicorn.run()` starts any asyncio machinery, so a bad configuration produces exactly the one `CRITICAL` line and exit 1 — no lifespan `SystemExit` traceback riding along behind it.
+- **M6.** `settings.pokeproxy_port` is now read by something. Previously validated and documented, never wired to the actual listener (which came from the CLI's hardcoded `--port 8000`).
+
+`app/.gitattributes` added at the same time (repo root), forcing `eol=lf` on `*.sh`, `Dockerfile*`, `*.yaml/.yml`, `Makefile`. Unrelated to R4/M6 but folded in here rather than left for Part 5 to discover the hard way: `git add` had warned "LF will be replaced by CRLF" on every file touched in step 1, and a `.sh` script checked out with CRLF fails with `bad interpreter: /bin/bash^M` the moment it's run under WSL or in a container — exactly the kind of failure Part 5's bootstrap scripts would hit first.
+
+Five new tests in `tests/test_entrypoint.py`, mocking `uvicorn.run` rather than binding a real port: bad config exits before `uvicorn.run` is called and logs one `CRITICAL` line; a custom `POKEPROXY_PORT` reaches `uvicorn.run`'s `port` kwarg; the default is 8000; the app import string is `"pokeproxy.main:app"`; `log_config=None` is passed.
+
+Verified by execution, not asserted:
+
+| Check | Result |
+|---|---|
+| `ruff check .` | All checks passed |
+| `pytest -q` from `app/`, the repo root, `/tmp` | **106 passed** each time (101 → 106; M7-CWD's CWD-independence survives the new entrypoint) |
+| Container: bad config (`POKEPROXY_HMAC_KEY` unset) | **1 line of output**, `CRITICAL configuration invalid, refusing to start`, exit code **1** — confirmed by `docker run --rm` with no other flags |
+| Container: `POKEPROXY_PORT=9001` | `/health` answers on **9001**, log line reads `Uvicorn running on http://0.0.0.0:9001` |
+| Container: SIGTERM on custom-port run | `shutdown started` → `shutdown complete`, clean exit, **1.21s** wall (includes Docker's own stop grace handling, consistent with the 880ms figure from step 1) |
+| JSON logging through the new path | uvicorn's own startup lines still render as JSON objects — `log_config=None` did not regress step 1's logging behavior |
+
+No change to `app/src/pokeproxy/main.py`, `proxy.py`, `config.py`, or any other request-path code — this step is entrypoint-only.
