@@ -6,7 +6,9 @@ This document is the persistent engineering state for the assignment. I update i
 
 ## Current State
 
-**Current phase:** Part 1 — **both final-audit SHOULD FIX findings closed.** R1 (retry attempt-timeout, `docs/issues/012-retry-attempt-timeout.md`) and D1 (consolidated known-gaps write-up, `docs/issues/000-known-gaps.md`) are fixed. 15 issue IDs now fixed across 12 changes, 13 write-ups, **101 tests** passing from `app/` and the repo root, `ruff` clean. R2, R3, R4 (nice to have, from the same audit) and the pre-existing NICE TO HAVE backlog (L1, L2, L5, M6, H6) remain open, tracked in `docs/issues/000-known-gaps.md`. Part 1 is functionally complete; Part 2 not started.
+**Current phase:** **Part 2 — Infrastructure & Deployment, step 1 of 10 done.** Design agreed and recorded in `docs/planning/part-02-infrastructure-deployment.md`; the Part 2 section below carries decisions and measured results. Branch `feature/infra-and-deployment`. Part 1 is functionally complete (detail retained below).
+
+**Part 1 (complete) — both final-audit SHOULD FIX findings closed.** R1 (retry attempt-timeout, `docs/issues/012-retry-attempt-timeout.md`) and D1 (consolidated known-gaps write-up, `docs/issues/000-known-gaps.md`) are fixed. 15 issue IDs now fixed across 12 changes, 13 write-ups, **101 tests** passing from `app/` and the repo root, `ruff` clean. R2, R3, R4 (nice to have, from the same audit) and the pre-existing NICE TO HAVE backlog (L1, L2, L5, M6, H6) remain open, tracked in `docs/issues/000-known-gaps.md`. Part 1 is functionally complete; Part 2 not started.
 
 **Completed:**
 - Read-only review of `app/`: source, config, tests, mock service, load generator.
@@ -26,9 +28,11 @@ This document is the persistent engineering state for the assignment. I update i
 - **Wave 5 (M7-CWD) — test suite no longer depends on the invoking shell's working directory.** New `app/tests/conftest.py` pins CWD to `app/` via `pytest_configure()`, computed from the test files' own location. Verified from three different working directories (`app/`, repo root, `/tmp`) — 94/94 every time. Write-up: `docs/issues/011-test-suite-cwd-dependence.md`.
 
 **Currently working on:**
-- Nothing in flight. R1 and D1 fixed (see Decisions and changes below). R2, R3, R4 and the pre-existing NICE TO HAVE items are open and tracked in `docs/issues/000-known-gaps.md` rather than repeated here.
+- Part 2, stopped after step 1 (Docker image) for approval of step 2. R2, R3 and the pre-existing NICE TO HAVE items are open and tracked in `docs/issues/000-known-gaps.md`. **R4 and M6 are step 2's scope**, not open-ended backlog.
 
-**Repository state:** branch `feature/repo-review`. R1 + D1 changes uncommitted as of this entry.
+**Repository state:** branch `feature/infra-and-deployment`, based on `395479c`. Untracked as of this entry: `app/Dockerfile`, `app/.dockerignore`, `docs/planning/part-02-infrastructure-deployment.md`. Nothing modified, nothing committed.
+
+**Environment facts measured 2026-08-22/23, not assumed:** Docker Desktop 27.3.1 (was not running at session start — a bootstrap prerequisite that must fail loudly). `kubectl` v1.30.5 on Windows only. WSL Ubuntu 22.04.3, 8 vCPU, **7.6 GiB RAM** — the ceiling Part 4's monitoring stack has to fit under. In WSL: `helm` present, `docker` reaches the daemon (confirmed 27.3.1, context `default`, but only after Docker Desktop finished starting — the first probe hung for ~2 min); **`k3d` and `kubectl` still need installing there.**
 
 **L3 — deliberately deferred, not missed (decided 2026-08-22).** Error responses (`{"error": "downstream error"}`, etc.) carry no `request_id`, unlike `main.py`'s own `internal_error` handler, which does — inconsistent, and exactly the "useful error messages" gap the assignment names. Root cause and fix were fully scoped in a pre-change review: inject `request.state.request_id` into the content dict at the 6 real error call sites already funneled through `proxy.py`'s `_outcome_response()` helper (built during H4) plus the 2 `JSONResponse` literals in `_forward_request`'s except blocks; `no_rule_matched`'s `{}` body stays untouched since it isn't an error. A related, separately-decidable question was also raised and left open: `rejected_signature_missing` and `rejected_signature_invalid` currently return identical body text (`"invalid signature"`) despite being distinguishable outcomes in the logs.
 
@@ -39,7 +43,8 @@ This document is the persistent engineering state for the assignment. I update i
 **Why M2 deferred rather than fixed:** user's explicit call, consistent with the H5 percentile-removal precedent — this class of protection is also achievable at the ingress/reverse-proxy layer in Part 2 (e.g., an Ingress `client_max_body_size`-equivalent), which is the more standard place production systems put it and rejects before the request even reaches this process. Recorded as a Part 2 addition below (defense-in-depth, not a replacement for the app-level fix, which stays scoped and ready if picked back up first).
 
 **Next:**
-1. Part 1 is functionally complete. Move to Part 2 (Infrastructure & Deployment) — Dockerfile, K8s manifests, Redis. The remaining NICE TO HAVE items (L1, L2, L5, M6, H6, R2, R3, R4) stay tracked in `docs/issues/000-known-gaps.md` and don't block Part 2.
+1. Part 2 step 2 — `src/pokeproxy/__main__.py` config preflight, closing R4 (config failure emits the intended `CRITICAL` line *and then* uvicorn's ~20-line `SystemExit` traceback) and M6 (`POKEPROXY_PORT` is documented but nothing reads it). First step of Part 2 that touches application code, so it needs regression tests and a full suite re-run from three working directories.
+2. Remaining NICE TO HAVE items (L1, L2, L5, R2, R3) stay tracked in `docs/issues/000-known-gaps.md` and don't block Part 2. H6 closes in steps 3/5, L6 in step 3, M2's ingress half in step 8.
 
 **R1 — per-attempt HTTP timeout now less than the retry deadline (final audit fix).** `Settings.forward_attempt_timeout_seconds` (`FORWARD_ATTEMPT_TIMEOUT_SECONDS`, default 3.0) replaces the hardcoded `read=10.0`/`write=10.0` in the shared `httpx.AsyncClient`, which previously equalled `FORWARD_DEADLINE_SECONDS` and let one slow attempt consume the whole retry budget. New `Settings.model_validator` rejects `attempt_timeout >= deadline` at startup by name, so the exact bug can't be reintroduced via misconfiguration. `main.py` gained `_build_http_client(settings)` so the client construction is independently testable. Live re-probe against the same black-hole socket used in the audit: **3 of 3 attempts in 9.70s**, was 1 of 3 in 10.17s. New `test_retry_timeout.py` uses a real TCP server (a custom `httpx` transport bypasses timeout enforcement entirely) — surfaced that Python 3.13's `asyncio.Server.wait_closed()` also waits for already-accepted connections' handlers to finish, so the test's hung-server fixture cancels its handler tasks explicitly rather than waiting on them. 7 new tests (94 → 101): 5 in `test_config.py`, 2 in `test_retry_timeout.py`. `ruff check .` clean. Full detail in `docs/issues/012-retry-attempt-timeout.md`.
 
@@ -257,7 +262,40 @@ Verified: 12 new tests (16 → 28); the same 5-case probe used for the "before" 
 
 ## Part 2 — Infrastructure & Deployment
 
-_Not started._
+Design agreed 2026-08-23. Full reasoning, alternatives and the constraints this sets for later Parts: `docs/planning/part-02-infrastructure-deployment.md`. Only decisions and measured results go here.
+
+**Stack:** WSL Ubuntu + bash · k3d · Helm (one chart, `values-local` + `values-prod`) · `python:3.13-slim-bookworm` multi-stage built with pinned uv 0.12.5 · Redis templated in-chart on the official `redis:7-alpine` · Sealed Secrets with a pinned sealing key · Traefik ingress exposing `/stream` only.
+
+**Decisions that overruled my initial recommendation, both deliberate:**
+- **Helm instead of Kustomize.** My case for Kustomize was `configMapGenerator`'s content-hash naming (which solves the H1 rules-restart problem for free) plus `kustomize edit set image`. Overruled on consistency — one packaging tool for local and prod. Helm's `checksum/config` annotation is equivalent, and `helm upgrade --atomic` plus `helm rollback` revision history is a real gain back for Part 3.
+- **CPU limits at 2× requests.** I argued for requests-only (CFS throttling on a latency-sensitive proxy costs tail latency, which then poisons Part 4's alert thresholds). Overruled. Mitigation: the *requests* come from `kubectl top` measurement in step 9, not from a guess.
+
+**Decision where I pushed back and it stuck:** Redis is templated in our own chart rather than pulled from the Bitnami chart. The Aug 2025 catalog change moved Bitnami's versioned images to `docker.io/bitnamilegacy/*` (archived, unpatched) and stopped OCI chart publishing; and `architecture: standalone` still brings a StatefulSet, PVC, auth Secret and sentinel/metrics templates we would disable. ~50 lines of our own YAML on the official image, with `maxmemory` set strictly below the container memory limit so Redis evicts under LRU instead of being OOMKilled.
+
+**Sealing key must be pinned or nothing is reproducible.** The controller mints a fresh keypair when it finds no Secret labeled `sealedsecrets.bitnami.com/sealed-secrets-key: active`, so on an ephemeral k3d cluster a committed SealedSecret would stop decrypting after every recreate. Bootstrap generates the keypair into a gitignored `.secrets/`, applies it *before* installing the controller, and installs with `keyrenewperiod=0`.
+
+**Step 1 (Docker image) — done 2026-08-23.** `app/Dockerfile` + `app/.dockerignore`. Multi-stage: uv copied from `ghcr.io/astral-sh/uv:0.12.5`, dependency layer keyed only on `pyproject.toml` + `uv.lock`, then `uv sync --frozen --no-dev --no-editable` so the runtime stage is the venv alone — no uv, no compilers, no source tree. `POKEPROXY_CONFIG` defaults to the absolute `/etc/pokeproxy/rules.json`, which kills the CWD-relative bug class (M7) at the deployment layer too.
+
+Verified by execution, not asserted:
+
+| Check | Result |
+|---|---|
+| Build (cold) | 37.0s |
+| Image size | **248 MB** |
+| Runtime user | `uid=10001(pokeproxy) gid=10001(pokeproxy)` — numeric, because `runAsNonRoot: true` cannot validate a named user |
+| Container start → `startup complete` | **2.55s**, including Docker's own start overhead |
+| `--read-only --cap-drop ALL --security-opt no-new-privileges` | Serves normally; `docker diff` shows only the rules bind-mount — **zero filesystem writes** |
+| Logs | JSON from the first line, uvicorn's records included |
+| Dev dependencies | `pytest` absent; venv `bin/` holds only runtime entry points |
+| SIGTERM | `shutdown started` → `shutdown complete` → exit **0** in 880 ms. uvicorn is PID 1 (exec-form `CMD`) — no signal-forwarding or zombie-reaping problem |
+| 5-case signed probe + 3 ops endpoints | 200 `{}` no-rule-matched · 502 downstream error (**expected** — rules still say `localhost:8001`, H6) · 401 missing sig · 401 bad sig · 400 bad protobuf · `/health` `/ready` `/stats` all 200 with populated counters |
+| Redis unreachable in-container | 3 × `WARNING cache lookup failed`, **zero 5xx** — C4 degradation holds in the container |
+
+Startup at 2.55s contradicts the ~3.2s module-import figure from Part 1, as expected — that number was WSL `/mnt/c` filesystem overhead, not the application. The `startupProbe` budget will be set against the container figure.
+
+No Python changed in step 1, so the test suite was not re-run.
+
+Base images are pinned by tag, not digest. Digest pinning is stronger and belongs in Part 3 once there is a bot to bump them.
 
 ---
 
