@@ -6,7 +6,7 @@ This document is the persistent engineering state for the assignment. I update i
 
 ## Current State
 
-**Current phase:** Part 1 — closing out the audit's SHOULD FIX list before declaring Part 1 done. C1, C5, C2, C3, C4, H1, M1+H7, H2+H3, H4+H5 fixed. Remaining: L3, M2, M4, M7-CWD, then defer everything else per the audit.
+**Current phase:** Part 1 — closing out the audit's SHOULD FIX list before declaring Part 1 done. C1, C5, C2, C3, C4, H1, M1+H7, H2+H3, H4+H5 fixed. **L3 reviewed and deliberately deferred** (below) rather than fixed. Remaining: M2, M4, M7-CWD, then defer everything else per the audit.
 
 **Completed:**
 - Read-only review of `app/`: source, config, tests, mock service, load generator.
@@ -24,16 +24,19 @@ This document is the persistent engineering state for the assignment. I update i
 - **Wave 4, part 3 (H4 + H5) — outcome accounting fixed, unbounded response-time storage removed.** `EndpointStats.record_request(is_error)` makes request/error counting atomic, so `error_rate` can no longer read 0.0 during a total outage. Rejections and `no_rule_matched` now count via a new outcome-keyed `StatsRegistry.record_outcome`. `_response_times`/`percentile()` deleted entirely (not bounded) — percentiles are Part 4's job (Prometheus histograms), `/stats` keeps only `avg_response_time` (already O(1) memory). Write-up: `docs/issues/009-outcome-accounting-and-unbounded-stats.md`.
 
 **Currently working on:**
-- Nothing in flight. H4+H5 complete and verified — closes the last Wave 4 item and the audit's #1 SHOULD FIX (the exact "`/stats` lies during an outage" bug from the original Part 1 assessment). Next: L3, M2, M4, M7-CWD, per the user's direction to fix all SHOULD FIX items before declaring Part 1 done.
+- Nothing in flight. H4+H5 complete and verified — closes the last Wave 4 item and the audit's #1 SHOULD FIX (the exact "`/stats` lies during an outage" bug from the original Part 1 assessment). L3 was reviewed next in sequence, root-caused, and a fix was fully scoped (see below) — then deliberately deferred rather than implemented, so that time went to M2/M4/M7-CWD instead. Next: M2, M4, M7-CWD, per the user's direction to fix the remaining SHOULD FIX items before declaring Part 1 done.
 
 **Repository state:** branch `feature/repo-review` tracking `origin`. Commits through H2+H3 pushed (`63d9871`). H4+H5 uncommitted, along with the audit doc updates from the previous session.
 
+**L3 — deliberately deferred, not missed (decided 2026-08-22).** Error responses (`{"error": "downstream error"}`, etc.) carry no `request_id`, unlike `main.py`'s own `internal_error` handler, which does — inconsistent, and exactly the "useful error messages" gap the assignment names. Root cause and fix were fully scoped in a pre-change review: inject `request.state.request_id` into the content dict at the 6 real error call sites already funneled through `proxy.py`'s `_outcome_response()` helper (built during H4) plus the 2 `JSONResponse` literals in `_forward_request`'s except blocks; `no_rule_matched`'s `{}` body stays untouched since it isn't an error. A related, separately-decidable question was also raised and left open: `rejected_signature_missing` and `rejected_signature_invalid` currently return identical body text (`"invalid signature"`) despite being distinguishable outcomes in the logs.
+
+**Why deferred rather than fixed:** low severity (originally classified **Low**, the only Low-severity item in the SHOULD FIX set — H4/H5 were High, M2/M4/M7-CWD are Medium and each guard a real correctness/CI risk). The `X-Request-ID` response *header* already carries the correlation ID today, so this is a body-vs-header convenience gap, not a hard blocker to correlating a support report — unlike M2 (resource exhaustion), M4 (a decided-but-unshipped behavior change other planning already assumes exists), or M7-CWD (breaks Part 3 CI outright if unaddressed). Time went to those first. **Not forgotten — scoped and ready to implement in one pass through `proxy.py` whenever it's picked back up.**
+
 **Next:**
-1. L3 — useful/correlatable error messages (assignment-named requirement).
-2. M2 — body size limit doesn't actually limit (resource exhaustion).
-3. M4 — implement the dedup decision (cache hit skips downstream forward), already designed in the planning doc but never shipped.
-4. M7-CWD — fix the CWD-relative config path so a wrong working directory doesn't take down the whole test suite (was 3 failing tests pre-H1, now 25).
-5. Then explicitly re-defer every remaining NICE TO HAVE (L1, L2, L5, M6, H6) with reasoning, and declare Part 1 done.
+1. M2 — body size limit doesn't actually limit (resource exhaustion).
+2. M4 — implement the dedup decision (cache hit skips downstream forward), already designed in the planning doc but never shipped.
+3. M7-CWD — fix the CWD-relative config path so a wrong working directory doesn't take down the whole test suite (was 3 failing tests pre-H1, now 25).
+4. Then explicitly re-defer every remaining NICE TO HAVE (L1, L2, L3, L5, M6, H6) with reasoning, and declare Part 1 done.
 
 **Part 1 completion audit (2026-08-22):** Full requirement-by-requirement pass against `README_HOME_ASSIGNMENT.md` Part 1 and this doc's own "Definition of done" (`docs/planning/part-01-production-hardening.md`). Verification run: `ruff check .` clean, `pytest -q` from `app/` — **73 passed**; from repo root — 25 fail (CWD-dependence, see Verified baselines).
 
@@ -43,12 +46,12 @@ This document is the persistent engineering state for the assignment. I update i
 - **The outcome-accounting seam** — H4+H5 fixed 2026-08-22. See Decisions and changes below and `docs/issues/009-outcome-accounting-and-unbounded-stats.md`.
 
 *Not yet satisfied, despite being named or self-committed:*
-- **"Useful error messages"** (assignment's own words) — L3 still open. Response bodies (`{"error": "downstream error"}`) carry no `request_id`, inconsistent with `main.py`'s own `internal_error` handler, which does.
+- **"Useful error messages"** (assignment's own words) — L3 reviewed and root-caused 2026-08-22, fix fully scoped, **deliberately deferred** rather than implemented (reasoning above under "L3 — deliberately deferred, not missed"). Response bodies (`{"error": "downstream error"}`) carry no `request_id`, inconsistent with `main.py`'s own `internal_error` handler, which does. Correlation is still possible today via the `X-Request-ID` response header, so this is a convenience gap, not a hard blocker.
 - M2 (body size limit doesn't actually limit — resource exhaustion) — still open.
 - M4 (dedup) — decided in the planning doc, never implemented; `cache.py`/`proxy.py` confirmed unchanged. Planning doc's Part 3/4 "M4 consequences" describe a future state, not current behavior.
 - M7 — re-scoped (see Verified baselines): test-coverage claim mostly disproven by the incremental suite, but CWD-dependence blast radius grew from 3→25 failing tests after H1.
 
-*Deliberately deferred, with reasoning already on record — no gap:* K8s-side of graceful shutdown (H7, Backlog/Part 2), rules ConfigMap live-reload (H1 consequence, Backlog/Part 2), H6 config-assumes-localhost (fundamentally a Part 2 deployment-topology decision), M3 replay protection (documented-only, protocol change), M5 `/stats` auth (Backlog/Part 4), L4 unbounded label cardinality (Backlog/Part 4), L6 `mock_service` packaging (Backlog/Part 2), L5 ruff-in-CI (natural Part 3 fit).
+*Deliberately deferred, with reasoning already on record — no gap:* K8s-side of graceful shutdown (H7, Backlog/Part 2), rules ConfigMap live-reload (H1 consequence, Backlog/Part 2), H6 config-assumes-localhost (fundamentally a Part 2 deployment-topology decision), M3 replay protection (documented-only, protocol change), M5 `/stats` auth (Backlog/Part 4), L4 unbounded label cardinality (Backlog/Part 4), L6 `mock_service` packaging (Backlog/Part 2), L5 ruff-in-CI (natural Part 3 fit), **L3 useful error messages (reviewed, root-caused, fix scoped, deliberately deprioritized below Medium-severity work — see "L3 — deliberately deferred, not missed")**.
 
 Full findings, severity, and reasoning: see the response given alongside this audit (not persisted verbatim here — token economy).
 
@@ -148,7 +151,7 @@ Wave numbering matches the order of work in `docs/planning/part-01-production-ha
 | M7 | Medium | ~~Five tests, all on decode/parse/match. Nothing covers `/stream`, HMAC, cache, Redis failure, downstream failure, headers or size limits.~~ **Largely disproven by the incremental regression suite** — each Wave 1-4 fix added its own coverage; 73 tests now span `/stream`, HMAC, cache hit/miss/failure, Redis failure, downstream timeout/error, headers (both directions), size limits, readiness, and startup failure. **What's actually still missing:** (1) no test drives a real cache **hit** through `/stream` end-to-end (only `cache.py` unit tests and always-miss stubs); (2) the CWD-dependence itself (see Verified baselines) is the one real open item under this ID. | `tests/test_basic.py` (pre-fix framing) | 5 | Open — re-scoped, not the original finding |
 | L1 | Low | A working HMAC secret is committed in `.env.example` and hardcoded as the load generator default. | `.env.example:1`, `load_generator.py:74` | 5 | Open |
 | L2 | Low | Empty-name payloads rejected as "likely garbage input" — a heuristic wearing validation's clothes, with a misleading error message. | `config.py:83-84` | 5 | Open |
-| L3 | Low | Error responses are opaque and uncorrelatable. `{"error": "downstream error"}` gives support nothing to search on. | `proxy.py:96-105,134-137,149-152` | 5 | Open |
+| L3 | Low | Error responses are opaque and uncorrelatable. `{"error": "downstream error"}` gives support nothing to search on. | `proxy.py:157,140,147` (current) | 5 | **Deferred, deliberately — reviewed and root-caused 2026-08-22, fix fully scoped (inject `request.state.request_id` at the 6 `_outcome_response` call sites + 2 `_forward_request` except blocks), not implemented. Prioritized M2/M4/M7-CWD instead — see "L3 — deliberately deferred, not missed" above.** |
 | L5 | Low | `ruff` is configured with a good ruleset and nothing runs it. No type gate despite `# type: ignore` throughout. | `pyproject.toml` | 5 | Open |
 | M4 | Medium | Cache costs a Redis round trip to save a microsecond-scale protobuf decode, and a hit still forwards downstream anyway. | `cache.py`, `proxy.py:199-211` | 3 | **Open — decided but not implemented.** Confirmed 2026-08-22: `cache.py`/`proxy.py` unchanged since the M4 decision; a hit still forwards. Planning doc's Part 3/4 "M4 consequences" describe a future state, not current behavior — do not build Part 3/4 assuming dedup exists |
 | M3 | Medium | No replay protection. The HMAC covers the body only. | `proxy.py:36-38` | — | Deferred, document only |
