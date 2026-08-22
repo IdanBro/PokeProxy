@@ -13,10 +13,11 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from pokeproxy.config import Settings
+from pokeproxy.config import Rule, Settings
 from pokeproxy.logging_config import setup_logging
 from pokeproxy.proxy import REQUEST_ID_HEADER, RetryPolicy
 from pokeproxy.proxy import router as proxy_router
+from pokeproxy.rules import load_rules
 from pokeproxy.stats import StatsRegistry
 
 # Configure logging at import time. Uvicorn sets up its own logging before it
@@ -45,12 +46,23 @@ def _load_settings() -> Settings:
         raise SystemExit(1) from None
 
 
+def _load_rules(config_path: str) -> list[Rule]:
+    try:
+        return load_rules(config_path)
+    except (OSError, ValueError) as e:
+        logger.critical(
+            "rules configuration invalid, refusing to start",
+            extra={"config_path": config_path, "error": str(e)},
+        )
+        raise SystemExit(1) from None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     settings = _load_settings()
     logging.getLogger().setLevel(settings.log_level.upper())
 
-    app.state.config_path = settings.pokeproxy_config
+    app.state.rules = _load_rules(settings.pokeproxy_config)
     app.state.hmac_key = settings.hmac_key
     app.state.stats = StatsRegistry()
 

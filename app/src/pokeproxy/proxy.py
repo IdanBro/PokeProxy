@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 
 from pokeproxy.cache import cache_pokemon, get_cached_pokemon, make_cache_key
 from pokeproxy.config import PokemonJSON, Rule, decode_pokemon
-from pokeproxy.rules import load_rules, match_pokemon
+from pokeproxy.rules import match_pokemon
 from pokeproxy.stats import StatsRegistry
 
 router = APIRouter()
@@ -204,8 +204,7 @@ async def stream(request: Request) -> Response:
             )
         await cache_pokemon(redis_client, cache_key, pokemon)
 
-    rules = load_rules(request.app.state.config_path)
-    matched_rule = match_pokemon(pokemon, rules)
+    matched_rule = match_pokemon(pokemon, request.app.state.rules)
 
     if matched_rule is None:
         # Returns 200 with an empty body, so without this label a rules
