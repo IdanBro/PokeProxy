@@ -67,7 +67,7 @@ The general rule "don't hand-roll infrastructure" is right, and for anything sta
 | 1 | `app/Dockerfile` + `.dockerignore`; build and verify standalone | **Done** |
 | 2 | `src/pokeproxy/__main__.py` config preflight (R4 + M6) | **Done** |
 | 3 | `Dockerfile.mock` + `/health` on `mock_service` (L6) | **Done** |
-| 4 | Helm chart skeleton: `Chart.yaml`, values, namespace + PSA, ServiceAccounts | Not started |
+| 4 | Helm chart skeleton: `Chart.yaml`, values, namespace + PSA, ServiceAccounts | **Done** |
 | 5 | Workload templates: redis, mock, pokeproxy — probes, resources, securityContext, `checksum/config`, rules via `toJson` (H6, H7) | Not started |
 | 6 | k3d cluster definition, `k3d image import`, first `helm upgrade --install` | Not started |
 | 7 | Sealed Secrets: controller, pinned sealing key, `seal-hmac.sh` | Not started |
@@ -186,3 +186,28 @@ Verified by execution:
 | `GET /health` | `{"status":"alive"}`, 200 |
 | `POST /pokemon` → `GET /received` round-trip | Posted body and `X-Grd-Reason` header both land correctly in `/received` |
 | `ruff check .` / `pytest -q` | Clean / **106 passed** — `mock_service` isn't pytest-covered (a test double testing a test double is circular), so this confirms no regression elsewhere, not new coverage |
+
+## Step 4 — result
+
+New `deploy/helm/pokeproxy/`: `Chart.yaml`, `.helmignore`, `values.yaml`, and `templates/{_helpers.tpl, namespace.yaml, serviceaccount.yaml}`. No workload manifests yet — those are step 5.
+
+`values.yaml` declares one `components` map (`pokeproxy`, `mock-downstream`, `redis`), each with `enabled` and `serviceAccount.create` — this is what lets `values-prod.yaml` disable the mock later with `components.mock-downstream.enabled: false` rather than a separate templating path. Component keys are kebab-case, matching the Kubernetes resource names directly, so there's no camelCase-to-kebab-case mapping table to keep in sync.
+
+`_helpers.tpl` defines the label/naming contract every later template consumes: `pokeproxy.component.fullname`, `.selectorLabels`, `.labels`, called as `include "pokeproxy.component.X" (dict "context" $ "component" "redis")`. One thing this caught immediately: the `pokeproxy` component's name collides with the chart name, and the naive `<release>-<component>` pattern would render `pokeproxy-pokeproxy` for a release also named `pokeproxy` (the name step 6 plans to use). `pokeproxy.component.fullname` special-cases a component whose name equals the chart name to use the bare release name instead — the same fix `helm create`'s own scaffold applies for its single main component, adapted here for a multi-component chart. Verified: `pokeproxy`, `pokeproxy-mock-downstream`, `pokeproxy-redis` — no stutter, and confirmed to still hold under a different release name (`myrelease` → `myrelease`, `myrelease-mock-downstream`, `myrelease-redis`).
+
+`namespace.yaml` names itself `{{ .Release.Namespace }}` rather than inventing a separate `values.namespace` field — the two would only ever need to be identical by convention, so keeping one fewer value removes a way for them to silently disagree. Carries `pod-security.kubernetes.io/{enforce,audit,warn}: restricted`, turning the securityContext work in step 5 into an enforced invariant rather than a claim, as decided in the design phase.
+
+**Not yet verified: first install into a real cluster.** Templating a Namespace resource inside the chart and installing with `-n pokeproxy` but *without* `--create-namespace` is a known-working Helm pattern — Namespace is first in Helm's fixed apply ordering, so it exists before the release's own namespaced resources (including its tracking Secret) need it. Combining `--create-namespace` with an in-chart Namespace resource is a known **anti**-pattern instead: the flag creates the namespace outside release tracking, and the chart's own Namespace manifest then fails with Helm's ownership-metadata conflict. Step 4 has no cluster to confirm this against (that's step 6); recorded here as a design decision to verify then, not asserted as proven now.
+
+`serviceaccount.yaml` renders one ServiceAccount per enabled component, each `automountServiceAccountToken: false` at the SA level — the pod-level `securityContext` field is the same decision applied again in step 5, belt-and-suspenders rather than redundant, since either alone is enough to prevent the mount.
+
+Verified by execution:
+
+| Check | Result |
+|---|---|
+| `helm lint . --strict` | Clean — only an informational "icon is recommended" note |
+| `helm template pokeproxy . --namespace pokeproxy` | Renders 1 Namespace + 3 ServiceAccounts; PSA labels present; consistent `app.kubernetes.io/{name,component,part-of,instance}` on every component resource |
+| `components.mock-downstream.enabled=false` override | Mock's ServiceAccount correctly absent from the render, others unaffected |
+| Different release name (`myrelease`) | Naming holds: `myrelease`, `myrelease-mock-downstream`, `myrelease-redis` — the fullname fix isn't hardcoded to one release name |
+
+No Python touched — chart-only step, so the test suite wasn't re-run.

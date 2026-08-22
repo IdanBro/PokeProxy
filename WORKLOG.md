@@ -6,7 +6,7 @@ This document is the persistent engineering state for the assignment. I update i
 
 ## Current State
 
-**Current phase:** **Part 2 — Infrastructure & Deployment, steps 1–3 of 10 done.** Design agreed and recorded in `docs/planning/part-02-infrastructure-deployment.md`; the Part 2 section below carries decisions and measured results. Branch `feature/infra-and-deployment`. Part 1 is functionally complete (detail retained below).
+**Current phase:** **Part 2 — Infrastructure & Deployment, steps 1–4 of 10 done.** Design agreed and recorded in `docs/planning/part-02-infrastructure-deployment.md`; the Part 2 section below carries decisions and measured results. Branch `feature/infra-and-deployment`. Part 1 is functionally complete (detail retained below).
 
 **Part 1 (complete) — both final-audit SHOULD FIX findings closed.** R1 (retry attempt-timeout, `docs/issues/012-retry-attempt-timeout.md`) and D1 (consolidated known-gaps write-up, `docs/issues/000-known-gaps.md`) are fixed. 15 issue IDs now fixed across 12 changes, 13 write-ups, **101 tests** passing from `app/` and the repo root, `ruff` clean. R2, R3, R4 (nice to have, from the same audit) and the pre-existing NICE TO HAVE backlog (L1, L2, L5, M6, H6) remain open, tracked in `docs/issues/000-known-gaps.md`. Part 1 is functionally complete; Part 2 not started.
 
@@ -28,7 +28,7 @@ This document is the persistent engineering state for the assignment. I update i
 - **Wave 5 (M7-CWD) — test suite no longer depends on the invoking shell's working directory.** New `app/tests/conftest.py` pins CWD to `app/` via `pytest_configure()`, computed from the test files' own location. Verified from three different working directories (`app/`, repo root, `/tmp`) — 94/94 every time. Write-up: `docs/issues/011-test-suite-cwd-dependence.md`.
 
 **Currently working on:**
-- Part 2, stopped after step 3 (mock downstream image + `/health`, closing L6) for review before step 4. R2, R3 and the pre-existing NICE TO HAVE items are open and tracked in `docs/issues/000-known-gaps.md`.
+- Part 2, stopped after step 4 (Helm chart skeleton) for review before step 5. R2, R3 and the pre-existing NICE TO HAVE items are open and tracked in `docs/issues/000-known-gaps.md`.
 
 **New standing rule (2026-08-23), added to `CLAUDE.md`:** write self-explanatory code with no comments (SOLID where the code has real structure to benefit — not forced onto trivial code); when a change makes existing code or tests obsolete, remove them as part of that change instead of leaving dead weight, scoped to what the current change touches. Applied immediately in step 3 — see below.
 
@@ -45,8 +45,8 @@ This document is the persistent engineering state for the assignment. I update i
 **Why M2 deferred rather than fixed:** user's explicit call, consistent with the H5 percentile-removal precedent — this class of protection is also achievable at the ingress/reverse-proxy layer in Part 2 (e.g., an Ingress `client_max_body_size`-equivalent), which is the more standard place production systems put it and rejects before the request even reaches this process. Recorded as a Part 2 addition below (defense-in-depth, not a replacement for the app-level fix, which stays scoped and ready if picked back up first).
 
 **Next:**
-1. Part 2 step 4 — Helm chart skeleton (`Chart.yaml`, values, namespace + PSA, ServiceAccounts, `_helpers.tpl`), pending review of step 3.
-2. Remaining NICE TO HAVE items (L1, L2, L5, R2, R3) stay tracked in `docs/issues/000-known-gaps.md` and don't block Part 2. H6's remaining half (rules URLs, config path) closes in step 5; M2's ingress half in step 8.
+1. Part 2 step 5 — workload templates (redis, mock-downstream, pokeproxy Deployments/Services): probes, resources, securityContext, `checksum/config`, rules rendered via `toJson` (closes the rest of H6, plus H7's cluster-side half), pending review of step 4.
+2. Remaining NICE TO HAVE items (L1, L2, L5, R2, R3) stay tracked in `docs/issues/000-known-gaps.md` and don't block Part 2. M2's ingress half closes in step 8.
 
 **R1 — per-attempt HTTP timeout now less than the retry deadline (final audit fix).** `Settings.forward_attempt_timeout_seconds` (`FORWARD_ATTEMPT_TIMEOUT_SECONDS`, default 3.0) replaces the hardcoded `read=10.0`/`write=10.0` in the shared `httpx.AsyncClient`, which previously equalled `FORWARD_DEADLINE_SECONDS` and let one slow attempt consume the whole retry budget. New `Settings.model_validator` rejects `attempt_timeout >= deadline` at startup by name, so the exact bug can't be reintroduced via misconfiguration. `main.py` gained `_build_http_client(settings)` so the client construction is independently testable. Live re-probe against the same black-hole socket used in the audit: **3 of 3 attempts in 9.70s**, was 1 of 3 in 10.17s. New `test_retry_timeout.py` uses a real TCP server (a custom `httpx` transport bypasses timeout enforcement entirely) — surfaced that Python 3.13's `asyncio.Server.wait_closed()` also waits for already-accepted connections' handlers to finish, so the test's hung-server fixture cancels its handler tasks explicitly rather than waiting on them. 7 new tests (94 → 101): 5 in `test_config.py`, 2 in `test_retry_timeout.py`. `ruff check .` clean. Full detail in `docs/issues/012-retry-attempt-timeout.md`.
 
@@ -336,6 +336,27 @@ Verified by execution:
 | `GET /health` | `{"status":"alive"}`, 200 |
 | `POST /pokemon` → `GET /received` | Body and `X-Grd-Reason` both land correctly |
 | `ruff check .` / `pytest -q` | Clean / **106 passed** — no regression; `mock_service` was and remains outside pytest coverage (a test double testing a test double is circular) |
+
+**Step 4 (Helm chart skeleton) — done 2026-08-23.** New `deploy/helm/pokeproxy/`: `Chart.yaml`, `.helmignore`, `values.yaml`, `templates/{_helpers.tpl, namespace.yaml, serviceaccount.yaml}`. Workload manifests (redis, mock-downstream, pokeproxy Deployments/Services) are step 5, not this one.
+
+`values.yaml`'s `components` map (`pokeproxy`, `mock-downstream`, `redis`) uses kebab-case keys matching the actual Kubernetes resource names — no camelCase-to-kebab mapping table to keep in sync. Each carries `enabled` + `serviceAccount.create`, which is what lets `values-prod.yaml` (step 10) turn the mock off with one line.
+
+**Caught and fixed a naming stutter before it shipped:** the naive `<release>-<component>` pattern renders `pokeproxy-pokeproxy` when the release is named `pokeproxy` (as step 6 plans) and the component is the main app, since the component name collides with the chart name. `pokeproxy.component.fullname` in `_helpers.tpl` special-cases that one collision — the same fix `helm create`'s own scaffold applies for its single main component, adapted here for three. Verified: `pokeproxy`, `pokeproxy-mock-downstream`, `pokeproxy-redis`, and confirmed to still hold under a different release name (`myrelease` → `myrelease`, `myrelease-mock-downstream`, `myrelease-redis`).
+
+`namespace.yaml` names itself `{{ .Release.Namespace }}` rather than a separate `values.namespace` field — one fewer value that could silently disagree with the other. Carries `pod-security.kubernetes.io/{enforce,audit,warn}: restricted`, per the design decision to make step 5's securityContext an enforced invariant rather than a claim.
+
+**Not yet verified — flagged rather than assumed:** installing without `--create-namespace` while the chart templates its own Namespace resource is a known-working Helm pattern (Namespace is first in Helm's fixed apply order, so it exists before the release needs it), and combining it *with* `--create-namespace` is a known anti-pattern (ownership-metadata conflict on the un-tracked namespace `--create-namespace` creates). No cluster exists yet to confirm this against live — that's step 6.
+
+Verified by execution:
+
+| Check | Result |
+|---|---|
+| `helm lint . --strict` | Clean — only an informational "icon is recommended" note |
+| `helm template pokeproxy . --namespace pokeproxy` | Renders 1 Namespace + 3 ServiceAccounts; PSA labels present; consistent `app.kubernetes.io/{name,component,part-of,instance}` on every resource |
+| `components.mock-downstream.enabled=false` override | Mock's ServiceAccount correctly absent, others unaffected |
+| Different release name (`myrelease`) | Fullname fix holds — not hardcoded to one release name |
+
+No Python touched — chart-only step, test suite not re-run.
 
 ---
 

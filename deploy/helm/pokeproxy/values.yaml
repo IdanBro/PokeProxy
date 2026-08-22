@@ -1,0 +1,15 @@
+components:
+  pokeproxy:
+    enabled: true
+    serviceAccount:
+      create: true
+
+  mock-downstream:
+    enabled: true
+    serviceAccount:
+      create: true
+
+  redis:
+    enabled: true
+    serviceAccount:
+      create: true
