@@ -60,10 +60,10 @@ jobs:
           echo "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883  kubeconform.tar.gz" | sha256sum -c
           tar -xzf kubeconform.tar.gz kubeconform
           sudo mv kubeconform /usr/local/bin/kubeconform
-      - run: helm lint --strict deploy/helm/pokeproxy -f deploy/helm/pokeproxy/values-local.yaml --set e2e.enabled=true --set e2e.image.tag=test
+      - run: helm lint --strict deploy/helm/pokeproxy -f deploy/envs/local/values.yaml --set e2e.enabled=true --set e2e.image.tag=test
       - run: |
           helm template pokeproxy deploy/helm/pokeproxy \
-            -f deploy/helm/pokeproxy/values-local.yaml \
+            -f deploy/envs/local/values.yaml \
             --set e2e.enabled=true --set e2e.image.tag=test \
             -n pokeproxy \
           | kubeconform -strict -ignore-missing-schemas -kubernetes-version 1.30.5 -summary

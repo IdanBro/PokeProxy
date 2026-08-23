@@ -2,12 +2,38 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CHART_DIR="$REPO_ROOT/deploy/helm/pokeproxy"
 SECRETS_DIR="$REPO_ROOT/.secrets"
-SEALING_KEY_MANIFEST="$SECRETS_DIR/sealing-key.yaml"
-VALUES_LOCAL="$CHART_DIR/values-local.yaml"
 
-CLUSTER_NAME="pokeproxy"
+ENVIRONMENT="local"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --env)
+      ENVIRONMENT="${2:-}"
+      shift 2
+      ;;
+    --env=*)
+      ENVIRONMENT="${1#*=}"
+      shift
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      echo "Usage: $0 [--env local|prod]" >&2
+      exit 1
+      ;;
+  esac
+done
+
+case "$ENVIRONMENT" in
+  local) CLUSTER_NAME="pokeproxy" ;;
+  prod) CLUSTER_NAME="pokeproxy-prod" ;;
+  *)
+    echo "Unknown environment '$ENVIRONMENT'. Expected 'local' or 'prod'." >&2
+    exit 1
+    ;;
+esac
+
+VALUES_FILE="$REPO_ROOT/deploy/envs/$ENVIRONMENT/values.yaml"
+SEALING_KEY_MANIFEST="$SECRETS_DIR/sealing-key-$ENVIRONMENT.yaml"
 KUBE_CONTEXT="${KUBE_CONTEXT:-k3d-$CLUSTER_NAME}"
 
 CONTROLLER_NAMESPACE="kube-system"
@@ -35,7 +61,7 @@ kubectl config get-contexts "$KUBE_CONTEXT" >/dev/null 2>&1 || {
   echo "Kube context '$KUBE_CONTEXT' not found. Create the cluster first, or set KUBE_CONTEXT=<name>." >&2
   exit 1
 }
-echo "Sealing against kube context '$KUBE_CONTEXT'"
+echo "Sealing for environment '$ENVIRONMENT' against kube context '$KUBE_CONTEXT'"
 
 generate_sealing_key() {
   local work_dir
@@ -54,6 +80,29 @@ generate_sealing_key() {
       sealedsecrets.bitnami.com/sealed-secrets-key=active \
       -o yaml \
     > "$SEALING_KEY_MANIFEST"
+}
+
+already_sealed() {
+  local file="$1" current
+  [[ -f "$file" ]] || return 1
+  current="$(grep -m1 -E '^[[:space:]]+encryptedValue:' "$file" | sed 's/.*encryptedValue:[[:space:]]*//')"
+  [[ -n "$current" && "$current" != "CHANGEME" ]]
+}
+
+write_encrypted_value() {
+  local file="$1" value="$2"
+
+  mkdir -p "$(dirname "$file")"
+  if [[ -f "$file" ]] && grep -qE '^[[:space:]]+encryptedValue:' "$file"; then
+    sed -i -E "s|^([[:space:]]+encryptedValue:).*|\1 $value|" "$file"
+  else
+    printf 'hmac:\n  encryptedValue: %s\n' "$value" >> "$file"
+  fi
+
+  grep -qF "encryptedValue: $value" "$file" || {
+    echo "Failed to write the sealed value into $file — refusing to continue." >&2
+    exit 1
+  }
 }
 
 mkdir -p "$SECRETS_DIR"
@@ -86,9 +135,9 @@ kubectl --context "$KUBE_CONTEXT" rollout status \
   deployment/"$CONTROLLER_NAME" -n "$CONTROLLER_NAMESPACE" --timeout=90s >/dev/null
 
 if [[ "$key_freshly_generated" == true ]]; then
-  echo "Sealing key was freshly generated — re-sealing $VALUES_LOCAL against it regardless of its current contents"
-elif [[ -f "$VALUES_LOCAL" ]] && ! grep -q "encryptedValue: CHANGEME" "$VALUES_LOCAL"; then
-  echo "$VALUES_LOCAL already holds a value sealed against the existing key, leaving it as-is"
+  echo "Sealing key was freshly generated — re-sealing $VALUES_FILE against it regardless of its current contents"
+elif already_sealed "$VALUES_FILE"; then
+  echo "$VALUES_FILE already holds a value sealed against the existing key, leaving it as-is"
   exit 0
 fi
 
@@ -105,9 +154,6 @@ encrypted_value="$(kubeseal --raw \
   --name="$SECRET_NAME" \
   --from-file="$SECRET_KEY=$value_file")"
 
-cat > "$VALUES_LOCAL" <<EOF
-hmac:
-  encryptedValue: $encrypted_value
-EOF
+write_encrypted_value "$VALUES_FILE" "$encrypted_value"
 
-echo "Wrote sealed HMAC value to $VALUES_LOCAL"
+echo "Wrote sealed HMAC value to $VALUES_FILE"

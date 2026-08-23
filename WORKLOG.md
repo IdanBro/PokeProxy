@@ -6,7 +6,26 @@ This document is the persistent engineering state for the assignment. I update i
 
 ## Current State
 
-**Current phase:** **Part 3 — CI/CD & GitOps: steps 1–3 done and verified live, 2026-08-23.** Plan: `docs/planning/part-03-cicd-gitops.md` (design `db4abba`). Branch `feature/gitops-ci-cd`, draft [PR #3](https://github.com/IdanBro/PokeProxy/pull/3) open against `main` as the vehicle for the rest of Part 3. Step 4 (prod stand-in cluster + Argo CD + `deploy/envs/` move) is next.
+**Current phase:** **Part 3 — CI/CD & GitOps: steps 1–4a done and verified live, 2026-08-23.** Plan: `docs/planning/part-03-cicd-gitops.md` (design `db4abba`). Branch `feature/gitops-ci-cd`, draft [PR #3](https://github.com/IdanBro/PokeProxy/pull/3) open against `main` as the vehicle for the rest of Part 3. Step 4a (the `deploy/envs/` move plus the N7 fix) is done; step 4b (prod stand-in cluster + Argo CD) is next.
+
+**Step 4a detail — env values moved out of the chart, N7 closed.** `values-local.yaml` → `deploy/envs/local/values.yaml` (git mv); `values-prod.yaml` **deleted** rather than moved — it described an environment that did not exist and could not deploy (S4). `scripts/seal-hmac.sh` gains `--env {local,prod}`, which selects the values file (`deploy/envs/$ENV/values.yaml`), the sealing key (`.secrets/sealing-key-$ENV.yaml`) and the cluster (`pokeproxy` / `pokeproxy-prod`). `deploy.sh` and `ci.yml` chart-lint each change one path.
+
+**N7 fixed** — the wholesale `cat > "$VALUES_LOCAL"` is replaced by `write_encrypted_value()`: `sed` targeted replacement of the `encryptedValue:` line when the key is present, append when it isn't, then a `grep -qF` assertion that the value actually landed (refuses to continue otherwise). **Deviation from the plan, which said yq:** `apt-cache policy yq` is empty on this box (Ubuntu 22.04; yq entered Ubuntu at 23.04), so using it means a GitHub-release binary and a `require_command yq` that Part 5's clean-machine bootstrap can't satisfy from a package manager. `sed` is safe here for a specific reason worth stating: base64's alphabet (`A-Za-z0-9+/=`) contains none of `|`, `&` or `\`, so neither the delimiter nor the replacement text can be misparsed. CI's step-5 promote job will use yq, since `ubuntu-latest` ships it.
+
+**A real bug in my own change, found by the test matrix rather than by review.** The already-sealed guard tested `! grep -q "encryptedValue: CHANGEME"` — so a values file with **no `encryptedValue` key at all** contains no "CHANGEME", was read as already-sealed, and was skipped, leaving the release with no HMAC secret. Inert before (local values always carried the key); live in 4b, where `deploy/envs/prod/values.yaml` is created fresh and hits exactly that path whenever the prod sealing key is reused. Replaced with `already_sealed()`, which tests for a **present, non-empty, non-CHANGEME** value.
+
+| Guard case | Expected | Result |
+|---|---|---|
+| Existing key, other content in file | re-seals, everything else survives | pass — sentinel tag *and* digest intact |
+| No `hmac` key at all | appends without loss | pass |
+| Already sealed, key unchanged | file untouched | pass — sha256 identical |
+| `encryptedValue:` present but **empty** | treats as unsealed, re-seals | pass (this is the bug above) |
+| `encryptedValue: CHANGEME` | re-seals | pass |
+| `--env staging` | rejected | pass |
+
+**Verification, live against the dev cluster:** render before vs after the move **byte-identical**; `helm lint --strict` clean; `deploy.sh` green — revision 11, 4/4 pods, E2E post-upgrade hook passed (`--atomic` did not roll back), `/received` grew by exactly 1. `.secrets/sealing-key.yaml` was renamed to `sealing-key-local.yaml` (sha256 verified identical before/after) and the in-cluster decrypted `pokeproxy-hmac` still reads `dGVzdC1zZWNyZXQtZm9yLWxvY2FsLWRldg==` byte-for-byte — so the rename did not cost decryptability.
+
+**A process note worth recording:** a `\1` sed backreference written through a Python heredoc landed in the file as literal byte `0x01`, silently breaking the guard until I dumped the line with `cat -A`. The same class of mangling later collapsed a `ci.yml` line-continuation block. Both caught by diff review, not by the tests.
 
 **Step 3 detail — E2E check.** `app/e2e/e2e_check.py` (new): plain Python, no pytest (image built `--no-dev`), reads `POKEPROXY_HMAC_KEY` from env exactly like `config.py`, sends a unique payload per run (`number` random 900000-999999, `name` `e2e-<uuid4>`), asserts matching→200+delivered-with-correct-reason, non-matching→200 `{}`+absent, corrupted signature→401. `app/Dockerfile.e2e` (new): 4-line derived image, `FROM ${BASE_IMAGE}`, switches to root to `COPY --chown=10001:10001` (base image's `/app` is root-owned) then back to 10001. `deploy/helm/pokeproxy/templates/e2e/job.yaml` (new): dual-annotated hook (`helm.sh/hook: post-install,post-upgrade` + `argocd.argoproj.io/hook: PostSync`), `backoffLimit: 0`, `activeDeadlineSeconds: 120`, `ttlSecondsAfterFinished: 3600`, full PSA-restricted securityContext, gated on `.Values.e2e.enabled` (default false — `scripts/deploy.sh` now builds/imports the e2e image and passes `--set e2e.enabled=true --set e2e.image.tag=$GIT_SHA`). 3 new NetworkPolicy rules (e2e↔ingress, e2e↔mock-downstream). New `chart-lint` CI job: `helm lint --strict` + `helm template | kubeconform -strict -ignore-missing-schemas`.
 

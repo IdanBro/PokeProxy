@@ -40,10 +40,10 @@ This carries the `pod-security.kubernetes.io/{enforce,audit,warn}: restricted` l
 ## 4. Seal the HMAC secret
 
 ```bash
-bash scripts/seal-hmac.sh
+bash scripts/seal-hmac.sh --env local
 ```
 
-Generates (or reuses) a Sealed Secrets sealing key under the gitignored `.secrets/`, installs the Sealed Secrets controller, and writes sealed ciphertext into `deploy/helm/pokeproxy/values-local.yaml`. Safe to re-run: it only re-seals when a new sealing key was actually generated — i.e. a fresh clone, which has no `.secrets/`. A fresh *cluster* with the key still on disk correctly reuses the existing ciphertext.
+Generates (or reuses) a Sealed Secrets sealing key at the gitignored `.secrets/sealing-key-local.yaml`, installs the Sealed Secrets controller, and writes sealed ciphertext into `deploy/envs/local/values.yaml`. `--env prod` is the same procedure against the prod stand-in cluster (`.secrets/sealing-key-prod.yaml`, `deploy/envs/prod/values.yaml`); it defaults to `local`. Safe to re-run: it only re-seals when a new sealing key was actually generated — i.e. a fresh clone, which has no `.secrets/`. A fresh *cluster* with the key still on disk correctly reuses the existing ciphertext.
 
 ## 5. Deploy
 
@@ -52,7 +52,7 @@ SHA=$(git rev-parse --short HEAD)
 helm upgrade --install pokeproxy deploy/helm/pokeproxy \
   --kube-context k3d-pokeproxy \
   -n pokeproxy \
-  -f deploy/helm/pokeproxy/values-local.yaml \
+  -f deploy/envs/local/values.yaml \
   --set components.pokeproxy.image.tag=$SHA \
   --set components.mock-downstream.image.tag=$SHA \
   --atomic --timeout 3m
@@ -81,8 +81,15 @@ cd app && python scripts/load_generator.py --url http://localhost:8080/stream --
 k3d cluster delete pokeproxy
 ```
 
-Deletes the cluster and everything in it. `.secrets/sealing-key.yaml` and `deploy/helm/pokeproxy/values-local.yaml` are left on disk — re-running steps 1–5 reuses them if the key is still valid, or regenerates and re-seals automatically if not (step 4's idempotency).
+Deletes the cluster and everything in it. `.secrets/sealing-key-local.yaml` and `deploy/envs/local/values.yaml` are left on disk — re-running steps 1–5 reuses them if the key is still valid, or regenerates and re-seals automatically if not (step 4's idempotency).
 
-## Production (`values-prod.yaml`)
+## Environments
 
-Not deployed anywhere — no production cluster exists for this assignment. `helm lint` and `helm template` against it are clean, but it has never been applied to a live cluster. See `docs/planning/part-02-infrastructure-deployment.md` step 10 for what's deliberately left unfinished (real downstream URLs, a real image registry).
+Per-environment values live outside the chart, at `deploy/envs/<env>/values.yaml`. Helm has never required a values file to sit inside the chart directory, and keeping them out means Argo CD and `deploy.sh` can point at the same files without the chart carrying environment-specific state.
+
+| Env | Values | Sealing key | Cluster / context |
+|---|---|---|---|
+| `local` | `deploy/envs/local/values.yaml` | `.secrets/sealing-key-local.yaml` | `pokeproxy` / `k3d-pokeproxy`, port 8080 |
+| `prod` | `deploy/envs/prod/values.yaml` | `.secrets/sealing-key-prod.yaml` | `pokeproxy-prod` / `k3d-pokeproxy-prod`, port 8081 |
+
+The old chart-internal `values-prod.yaml` was deleted rather than moved: it described an environment that did not exist and could not deploy (see S4 in `WORKLOG.md`). The prod environment and its Argo CD bootstrap are Part 3 step 4b.
