@@ -1,3 +1,4 @@
+{{- if .Values.components.pokeproxy.enabled }}
 {{- $spec := .Values.components.pokeproxy -}}
 {{- $redisSpec := .Values.components.redis -}}
 apiVersion: v1
@@ -17,3 +18,4 @@ data:
   REDIS_CONNECT_TIMEOUT_SECONDS: {{ $spec.env.redisConnectTimeoutSeconds | quote }}
   REDIS_SOCKET_TIMEOUT_SECONDS: {{ $spec.env.redisSocketTimeoutSeconds | quote }}
   CACHE_TTL_SECONDS: {{ $spec.env.cacheTtlSeconds | quote }}
+{{- end }}

@@ -525,3 +525,108 @@ Deployed the committed tree at `721b8fc` end-to-end first, so every result below
 | Health probes | **Met** — startup/liveness/readiness on all three; a Redis outage proven not to gate readiness |
 | Sensible configuration | **Met** — ConfigMap env + rules, `checksum/config-*` proven to roll pods on change; **S2** is the one live footgun |
 | Secrets handled properly | **Partially met** — sealed in git, decrypted correctly in-cluster, never plaintext in a tracked file; **B1** means it only works on this machine |
+
+## Part 2 re-audit at HEAD `cd72953` — 2026-08-23
+
+Second pass, after the first audit's B1/B2/S1–S3 fixes and `scripts/deploy.sh` landed. Same rule as before: deployed behavior, not manifest syntax. No code or chart changed by this audit.
+
+Two things made this pass different from the first. The cluster was running images tagged `cbb7911` while HEAD was `cd72953` — the last commit's two `deploy.sh` runs happened *before* that commit existed, so the tree had drifted past the cluster again. And the from-zero path had still never been executed: `deploy.sh` had only ever taken its cluster-reuse branch. So I ran it both ways.
+
+**Run 1 — reuse branch, existing cluster.** `bash scripts/deploy.sh`, 2m08s, revision 14, 4/4 pods, 0 restarts. Namespace apply `unchanged`, sealing key reused, ciphertext left alone, Redis pod untouched (unchanged template). Images now `pokeproxy:cd72953` / `mock-downstream:cd72953`, both carrying `org.opencontainers.image.revision=cd72953`.
+
+**Run 2 — from zero.** `k3d cluster delete pokeproxy` (7.6s, zero clusters left), then one `bash scripts/deploy.sh`: **4m39s to a fully running stack**, `Release "pokeproxy" does not exist. Installing it now.` → revision 1, 4/4 pods Ready, 0 restarts, ingress probe 401. This is the first time the whole path has actually been executed end-to-end rather than assembled from steps. It also proves something step 6's original check could not: **the committed ciphertext decrypts on a cluster that has never existed before**, because the sealing key is re-pinned from `.secrets/` into a freshly installed controller (`Synced=True`, decrypted value byte-identical to the dev key). The working tree was clean before and after — `values-local.yaml` sha256 `ad34639c…` unchanged across both runs.
+
+### Verified by execution
+
+| Check | Result |
+|---|---|
+| `helm lint`, both values files | Clean (only `icon is recommended`) |
+| Full teardown then `deploy.sh` to running | **4m39s**, revision 1, 4/4 Ready, 0 restarts, working tree clean |
+| Idempotent re-run on an existing cluster | 2m08s, revision 14, 4/4 Ready, 0 restarts; namespace `unchanged`, key + ciphertext reused |
+| Prerequisite failure is loud | `env PATH=/usr/bin:/bin bash scripts/deploy.sh` gives `Missing required command: kubectl`, **exit 1** |
+| E2E through the **real ingress**, run against both the reused and the from-scratch cluster | **11/11 checks pass** each time: signed match 200 · repeat 200 · non-match 200 `{}` · missing sig 401 · bad sig 401 · malformed protobuf 400 · `X-Request-ID` echoed verbatim · 2 MiB body **413** · `/health` `/ready` `/stats` **404** |
+| Forward actually lands downstream | mock-downstream `/received`: **5 records, 5 unique, 0 duplicates** on the from-scratch cluster. The payload posted twice appears once; the non-matching payload never appears |
+| Cluster DNS + Service routing | Live pod `/stats` keys on `http://pokeproxy-mock-downstream.pokeproxy.svc.cluster.local.:8001/pokemon`; `REDIS_URL=redis://pokeproxy-redis.pokeproxy.svc.cluster.local.:6379/0` |
+| Redis dedup state | 5 keys `pokeproxy:pokemon:<sha256>`, TTL 252/300, `maxmemory 134217728`, `maxmemory-policy allkeys-lru`. 5 keys for 5 *forwarded* payloads — `no_rule_matched` returns at `proxy.py:246` before the cache write, so a non-matching payload is correctly never cached |
+| **Redis outage** (`scale --replicas=0`) | Both pokeproxy pods stayed `Ready`, 0 restarts; **20/20 requests to 200, zero 5xx**. Handled `WARNING cache write failed` per request. M1 and C4 hold in-cluster |
+| **Rolling restart under live load** | ~20 rps of all-unique payloads across a full `rollout restart`: **642 sent, 642 × 200, 0 transport errors, 0 restarts** |
+| PSA enforcement | `privileged: true, runAsUser: 0` pod **rejected**: `violates PodSecurity "restricted:latest"`, all six violations named |
+| NetworkPolicy | Unlabeled compliant pod: **all three denied by ClusterIP** — redis `10.43.209.105:6379`, mock `10.43.238.101:8001`, pokeproxy `10.43.93.39:8000`. Retested by IP on purpose: the first probe used DNS names and busybox `nslookup` exits non-zero on the search-domain NXDOMAINs even when resolution succeeds, which would have made a DNS failure look like a policy hit. DNS did resolve (`pokeproxy-redis.pokeproxy.svc.cluster.local` to `10.43.209.105`) — the `allow-dns-egress` exception works |
+| Runtime security in-pod | `uid=10001(pokeproxy) gid=10001`, `/app` read-only, `/tmp` writable, `/etc/pokeproxy` read-only, `automountServiceAccountToken: false`, `enableServiceLinks: false`, `terminationGracePeriodSeconds: 30`, `preStop sleep 5s` |
+| Config delivery | All 11 expected env vars present and correct in-process; `rules.json` mounted with the templated cluster URLs |
+| `checksum/config-*` independence | `logLevel=DEBUG` moves `config-env` only (`04e8aa3d…` to `cea42821…`), `config-rules` byte-identical; changing `rules[0].reason` moves `config-rules` only |
+| Resources at idle (`kubectl top`) | pokeproxy 3m / 46–49Mi (req 250m/128Mi), mock 3m / 35Mi, redis 24m / 4Mi. Requests still comfortably above idle and below the step-9 measured peak |
+| Secret hygiene | `.secrets/` gitignored and untracked (`git ls-files .secrets` returns 0). The dev key appears in plaintext only in tests, `.env.example` and the load generator — deliberately, it *is* the public dev key; the sealing mechanism is what is being demonstrated |
+| App suite at HEAD | `pytest -q` **106 passed**, `ruff check .` clean |
+
+### Gaps found
+
+**BLOCKER — none.** Both first-pass blockers stay fixed and were re-proven by the from-zero run.
+
+**SHOULD FIX — S5: `scripts/deploy.sh` never pins a kube context, so it can deploy into the wrong cluster.** `k3d cluster list pokeproxy` is context-independent — measured exit `0` under both `k3d-pokeproxy` and `docker-desktop`, and `1` for a name that does not exist. So the guard at `scripts/deploy.sh:39` correctly detects the k3d cluster *whatever context is current*, takes the reuse branch, skips `k3d cluster create` (the only step that would have switched context), and then runs `kubectl apply -f deploy/k8s/namespace.yaml` and `helm upgrade --install` against whatever `kubectl config current-context` happens to be. This machine has exactly that second context — `docker-desktop` — and `kubectl config get-contexts` lists both. Today it happens to fail loudly (`dial tcp 127.0.0.1:6443: connect: connection refused`, Docker Desktop's Kubernetes is off), which is luck, not design: on a machine with a live second cluster this silently installs PokeProxy somewhere it was never meant to go. `scripts/seal-hmac.sh` has the same exposure and it is worse there — it applies an RSA **private key** into `kube-system` (`seal-hmac.sh:62`) before anything else runs. Fix: pass `--kube-context k3d-pokeproxy` to `helm` and `--context k3d-pokeproxy` to every `kubectl` in both scripts, sourced from one variable. Not fixed in this audit.
+
+**SHOULD FIX — S6: S1's `enabled` fix is incomplete — five pokeproxy-owned resources still render when the component is off.** `helm template --set components.pokeproxy.enabled=false` gates the Deployment and Service correctly, but still emits `ConfigMap …-env`, `ConfigMap …-rules`, `SealedSecret …-hmac`, `Ingress`, `Middleware body-limit`, plus three NetworkPolicies selecting a pod that no longer exists. The Ingress is the one with live consequences: it routes `/stream` to a Service that was never created, so Traefik answers **503** where the flag was supposed to mean "this component is not deployed." Same one-line `{{- if $spec.enabled }}` wrap the other four templates already have. Not fixed in this audit.
+
+**SHOULD FIX — S4 (carried, still open) and it is worse than recorded.** Re-confirmed by rendering: `values-prod.yaml` produces all three rules with `url: http://t-mock-downstream.default.svc.cluster.local.:8001/pokemon` while `mock-downstream.enabled: false`. The part that was *not* recorded: even after someone fixes the URLs, `allow-pokeproxy-egress-to-dependencies` permits egress only to in-namespace pods labelled `app.kubernetes.io/name: redis` and `mock-downstream`, so `default-deny-all` blocks every packet to a real external downstream. `values-prod.yaml` is undeployable on two independent counts and only one of them is written down. The `fail`-at-render fix still stands for the URL half; the egress half needs a values-driven `egress` block (CIDR or namespace selector for the real downstream).
+
+**NICE TO HAVE**
+
+| ID | Finding | Evidence |
+|----|---------|----------|
+| N1–N6 | All six from the first audit remain open and unchanged | see the previous audit section |
+| N4 (re-confirmed live) | The Redis-outage probe again produced one handled `WARNING` per request, each followed by a 12-line Python traceback. `logging_config.py:57-62` documents this as deliberate, but it contradicts the same module's own docstring contract ("one JSON object per line", `logging_config.py:3`) and multiplies log volume roughly 12x during exactly the incident where volume matters. `exc_info=False` on `cache.py:20` and `cache.py:50` is the two-line fix — the `error` field already carries type and message | live |
+| N7 | `scripts/seal-hmac.sh:96` rewrites `values-local.yaml` wholesale with `cat >`, discarding anything else in it. Harmless today (the file holds only `hmac:`), silent loss the first time someone adds a local override there | static |
+| N8 | `deploy/README.md:44` says the script re-seals on a "fresh clone or fresh cluster". A fresh cluster with the key still on disk does **not** re-seal — verified in run 2, which printed `already holds a value sealed against the existing key, leaving it as-is` and was correct to. Only "fresh clone" (i.e. no key file) triggers it | live |
+
+### Assignment requirements — disposition at `cd72953`
+
+| Requirement | State |
+|---|---|
+| Containerize the application (Dockerfile) | **Met** — `app/Dockerfile` + `app/Dockerfile.mock`, multi-stage, non-root uid 10001, read-only rootfs, no dev deps, revision label matches HEAD |
+| Deploy PokeProxy | **Met** — 2 replicas, healthy from zero in 4m39s, reachable through the real ingress |
+| Deploy the mock downstream | **Met** — receiving real forwarded traffic, verified by reading `/received` |
+| Deploy Redis for the cache | **Met** — LRU-bounded, dedup proven exactly-once over cluster networking |
+| Accessible and healthy within the cluster | **Met** — via the real ingress and in-cluster DNS, on a cluster built from nothing |
+| Resource limits | **Met** — requests/limits on all three, requests still above measured idle |
+| Health probes | **Met** — startup/liveness/readiness on all three; Redis outage proven not to gate readiness; rollout under load dropped 0 of 642 |
+| Sensible configuration | **Met** — ConfigMap env + rules, checksum independence proven; S6 is the remaining render-time footgun |
+| Secrets handled properly | **Met** — the first audit's B1 caveat is gone: ciphertext now decrypts on a cluster created from scratch, `.secrets/` untracked, no plaintext key in any deploy artifact |
+
+### S5 and S6 fixed — 2026-08-23, same day as the re-audit
+
+Both re-verified live against the running cluster. S4 deliberately left open. No app code touched.
+
+**S5 — context pinning.** `KUBE_CONTEXT="${KUBE_CONTEXT:-k3d-$CLUSTER_NAME}"` in `scripts/deploy.sh` and `scripts/seal-hmac.sh`, threaded explicitly onto every call that contacts an API server: `--context` on the namespace apply, the sealing-key apply, `rollout status`, the verify `get pods` and `kubeseal --raw`; `--kube-context` on both `helm upgrade` calls. `deploy.sh` exports the value into `seal-hmac.sh` so the two cannot disagree. Both scripts then assert the context exists and exit 1 naming it if not.
+
+Chose explicit flags over `kubectl config use-context` on purpose: a deploy script should stop depending on ambient shell state, not overwrite it. Confirmed — the operator's current context was still `docker-desktop` after a successful run. `k3d image import` and the two client-side `kubectl --dry-run=client` / `--local` calls are untouched; the first addresses the cluster through Docker by name, the other two never reach an API server.
+
+| Check | Result |
+|---|---|
+| `bash -n` both scripts | Clean |
+| `KUBE_CONTEXT=does-not-exist bash scripts/deploy.sh` | `Kube context 'does-not-exist' not found…`, **exit 1**, before any image build |
+| `KUBE_CONTEXT=does-not-exist bash scripts/seal-hmac.sh` (standalone) | Same, **exit 1** |
+| Old behaviour reproduced | Bare `kubectl apply -f deploy/k8s/namespace.yaml` under `docker-desktop` → `dial tcp 127.0.0.1:6443: connect: connection refused` — it followed the wrong context, exactly as the audit predicted |
+| **Fixed `deploy.sh` run with `current-context = docker-desktop`** | **Deployed to `k3d-pokeproxy` anyway** — `Sealing against kube context 'k3d-pokeproxy'`, `namespace/pokeproxy unchanged`, revision 2, 4/4 Ready, 401 probe, 1m15s |
+| Operator's context after that run | Still `docker-desktop` — unmodified |
+
+**S6 — gate the remaining pokeproxy templates.** `configmap-env.yaml`, `configmap-rules.yaml` and `sealedsecret-hmac.yaml` wrapped in `{{- if .Values.components.pokeproxy.enabled }}`; `ingress.yaml` and `traefik-middleware.yaml` folded into their existing `and` conditions rather than nesting a second `if`.
+
+The four pokeproxy-related NetworkPolicies are **deliberately left ungated**, and this is the one judgment call in the change. Unlike the Ingress they are provably inert when pokeproxy is absent: `allow-ingress-to-pokeproxy` and `allow-pokeproxy-egress-to-dependencies` select a pod that does not exist, and `allow-pokeproxy-to-redis` / `allow-pokeproxy-to-mock-downstream` select redis and mock but permit ingress from a selector matching nothing — leaving those two exactly as closed as `default-deny-all` already makes them. Gating them would thread a per-component flag into a file whose own switch is `networkPolicy.enabled`, mixing two concerns to delete output nobody reads.
+
+**The obvious placement was wrong and the render diff caught it.** Putting `{{- if … }}` *after* the two `{{- $var := … -}}` assignments in `configmap-env.yaml` left the `if`'s closing `}}` emitting a newline before `apiVersion:`, because no `{{-` followed to strip it. The ConfigMap's bytes changed, so `include … | sha256sum` changed, so `checksum/config-env` moved — **every pokeproxy pod would have rolled on the next upgrade for a whitespace edit**. Moving the `if` above the assignments fixed it: they start with `{{-` and strip the newline themselves. Worth recording because reading the template would never have surfaced it; only diffing renders did.
+
+| Check | Result |
+|---|---|
+| Render before vs after, `values-local.yaml` | **Byte-identical** (before = `git show HEAD:` copies of the five templates in a scratch chart) |
+| Render before vs after, `values-prod.yaml` | **Byte-identical** |
+| `--set components.pokeproxy.enabled=false`, before | 17 resources, incl. `ConfigMap`×2, `SealedSecret`, `Ingress`, `Middleware` |
+| `--set components.pokeproxy.enabled=false`, after | **12** — all five gone; mock, redis and the NetworkPolicies remain |
+| All three components disabled | 6 NetworkPolicies, valid YAML, no dangling references |
+| `helm lint`, both values files | Clean |
+| Live redeploy | Revision 2, 4/4 Ready, `checksum/config-{env,rules}` unchanged, **no pod rolled** (pod ages unchanged across the upgrade) |
+
+**Joint verification after both fixes:** E2E through the real ingress **11/11**, `pytest -q` **106 passed**, `ruff` clean.
+
+**Also fixed in passing: N8.** `deploy/README.md:44` claimed re-sealing happens on a "fresh clone or fresh cluster". Only a fresh clone (no `.secrets/`) triggers it; a fresh cluster with the key still on disk correctly reuses the existing ciphertext, as run 2 of the re-audit demonstrated. Reworded. The README's step 3, 5 and 6 commands now also carry `--context` / `--kube-context` so they match what the scripts do.
+
+**Still open:** S4 (`values-prod.yaml` undeployable on two counts — rules pointing at the disabled mock Service, and an egress allowlist with no entry for a real external downstream) and N1–N7.

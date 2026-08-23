@@ -7,6 +7,9 @@ SECRETS_DIR="$REPO_ROOT/.secrets"
 SEALING_KEY_MANIFEST="$SECRETS_DIR/sealing-key.yaml"
 VALUES_LOCAL="$CHART_DIR/values-local.yaml"
 
+CLUSTER_NAME="pokeproxy"
+KUBE_CONTEXT="${KUBE_CONTEXT:-k3d-$CLUSTER_NAME}"
+
 CONTROLLER_NAMESPACE="kube-system"
 CONTROLLER_NAME="sealed-secrets-controller"
 CONTROLLER_CHART_VERSION="2.19.3"
@@ -27,6 +30,12 @@ require_command kubectl
 require_command helm
 require_command kubeseal
 require_command openssl
+
+kubectl config get-contexts "$KUBE_CONTEXT" >/dev/null 2>&1 || {
+  echo "Kube context '$KUBE_CONTEXT' not found. Create the cluster first, or set KUBE_CONTEXT=<name>." >&2
+  exit 1
+}
+echo "Sealing against kube context '$KUBE_CONTEXT'"
 
 generate_sealing_key() {
   local work_dir
@@ -59,12 +68,13 @@ else
 fi
 
 echo "Pinning sealing key into $CONTROLLER_NAMESPACE"
-kubectl apply -f "$SEALING_KEY_MANIFEST" >/dev/null
+kubectl --context "$KUBE_CONTEXT" apply -f "$SEALING_KEY_MANIFEST" >/dev/null
 
 echo "Installing sealed-secrets controller $CONTROLLER_CHART_VERSION"
 helm repo add sealed-secrets https://bitnami.github.io/sealed-secrets >/dev/null 2>&1 || true
 helm repo update sealed-secrets >/dev/null
 helm upgrade --install sealed-secrets sealed-secrets/sealed-secrets \
+  --kube-context "$KUBE_CONTEXT" \
   --version "$CONTROLLER_CHART_VERSION" \
   --namespace "$CONTROLLER_NAMESPACE" \
   --set fullnameOverride="$CONTROLLER_NAME" \
@@ -72,7 +82,8 @@ helm upgrade --install sealed-secrets sealed-secrets/sealed-secrets \
   --set keyrenewperiod="0" \
   --wait --timeout 2m >/dev/null
 
-kubectl rollout status deployment/"$CONTROLLER_NAME" -n "$CONTROLLER_NAMESPACE" --timeout=90s >/dev/null
+kubectl --context "$KUBE_CONTEXT" rollout status \
+  deployment/"$CONTROLLER_NAME" -n "$CONTROLLER_NAMESPACE" --timeout=90s >/dev/null
 
 if [[ "$key_freshly_generated" == true ]]; then
   echo "Sealing key was freshly generated — re-sealing $VALUES_LOCAL against it regardless of its current contents"
@@ -87,6 +98,7 @@ trap 'rm -f "$value_file"' EXIT
 printf '%s' "$HMAC_VALUE" > "$value_file"
 
 encrypted_value="$(kubeseal --raw \
+  --context "$KUBE_CONTEXT" \
   --controller-name="$CONTROLLER_NAME" \
   --controller-namespace="$CONTROLLER_NAMESPACE" \
   --namespace="$APP_NAMESPACE" \

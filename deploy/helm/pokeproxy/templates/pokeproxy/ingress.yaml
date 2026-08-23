@@ -1,4 +1,4 @@
-{{- if .Values.ingress.enabled }}
+{{- if and .Values.ingress.enabled .Values.components.pokeproxy.enabled }}
 {{- $fullname := include "pokeproxy.component.fullname" (dict "context" $ "component" "pokeproxy") }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress

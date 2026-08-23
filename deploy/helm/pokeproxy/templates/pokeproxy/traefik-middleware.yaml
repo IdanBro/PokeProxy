@@ -1,4 +1,4 @@
-{{- if and .Values.ingress.enabled .Values.ingress.bodyLimit.enabled (eq .Values.ingress.bodyLimit.provider "traefik") }}
+{{- if and .Values.ingress.enabled .Values.components.pokeproxy.enabled .Values.ingress.bodyLimit.enabled (eq .Values.ingress.bodyLimit.provider "traefik") }}
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:

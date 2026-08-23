@@ -16,6 +16,8 @@ k3d cluster create --config deploy/k3d/cluster.yaml
 
 Single server node, `localhost:8080` mapped to the ingress. `kubectl config current-context` should now be `k3d-pokeproxy`.
 
+Every step below, and `scripts/deploy.sh`, target the `k3d-pokeproxy` context explicitly rather than whatever context happens to be current — set `KUBE_CONTEXT=<name>` to override. The scripts never change your current context.
+
 ## 2. Build and import the images
 
 Build at the exact commit you intend to deploy — a stale image tag on a redeployed sha is the most common failure mode in this project's history.
@@ -30,7 +32,7 @@ k3d image import pokeproxy:$SHA mock-downstream:$SHA -c pokeproxy
 ## 3. Create the namespace
 
 ```bash
-kubectl apply -f deploy/k8s/namespace.yaml
+kubectl --context k3d-pokeproxy apply -f deploy/k8s/namespace.yaml
 ```
 
 This carries the `pod-security.kubernetes.io/{enforce,audit,warn}: restricted` labels that make the security posture in the chart's Deployments an enforced invariant, not just a claim. Idempotent — safe to re-run.
@@ -41,13 +43,14 @@ This carries the `pod-security.kubernetes.io/{enforce,audit,warn}: restricted` l
 bash scripts/seal-hmac.sh
 ```
 
-Generates (or reuses) a Sealed Secrets sealing key under the gitignored `.secrets/`, installs the Sealed Secrets controller, and writes sealed ciphertext into `deploy/helm/pokeproxy/values-local.yaml`. Safe to re-run: it only re-seals when a new key was actually generated (fresh clone or fresh cluster), never on every run.
+Generates (or reuses) a Sealed Secrets sealing key under the gitignored `.secrets/`, installs the Sealed Secrets controller, and writes sealed ciphertext into `deploy/helm/pokeproxy/values-local.yaml`. Safe to re-run: it only re-seals when a new sealing key was actually generated — i.e. a fresh clone, which has no `.secrets/`. A fresh *cluster* with the key still on disk correctly reuses the existing ciphertext.
 
 ## 5. Deploy
 
 ```bash
 SHA=$(git rev-parse --short HEAD)
 helm upgrade --install pokeproxy deploy/helm/pokeproxy \
+  --kube-context k3d-pokeproxy \
   -n pokeproxy \
   -f deploy/helm/pokeproxy/values-local.yaml \
   --set components.pokeproxy.image.tag=$SHA \
@@ -60,7 +63,7 @@ helm upgrade --install pokeproxy deploy/helm/pokeproxy \
 ## 6. Verify
 
 ```bash
-kubectl get pods -n pokeproxy
+kubectl --context k3d-pokeproxy get pods -n pokeproxy
 curl -i -X POST http://localhost:8080/stream   # expect 401 — no signature on this plain request
 ```
 
