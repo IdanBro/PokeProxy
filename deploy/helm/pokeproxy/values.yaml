@@ -17,6 +17,7 @@ e2e:
   image:
     repository: pokeproxy-e2e
     tag: CHANGEME
+    digest: ""
     pullPolicy: IfNotPresent
   proxyUrl: http://traefik.kube-system.svc.cluster.local:80/stream
   # Traefik Service port 80 maps to its container's "web" entrypoint on 8000.
@@ -36,6 +37,7 @@ components:
     image:
       repository: pokeproxy
       tag: CHANGEME
+      digest: ""
       pullPolicy: IfNotPresent
     probes:
       startup:
@@ -82,6 +84,7 @@ components:
     image:
       repository: mock-downstream
       tag: CHANGEME
+      digest: ""
       pullPolicy: IfNotPresent
     probes:
       startup:

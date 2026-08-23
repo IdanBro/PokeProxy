@@ -67,6 +67,12 @@ jobs:
             --set e2e.enabled=true --set e2e.image.tag=test \
             -n pokeproxy \
           | kubeconform -strict -ignore-missing-schemas -kubernetes-version 1.30.5 -summary
+      - run: helm lint --strict deploy/helm/pokeproxy -f deploy/envs/prod/values.yaml
+      - run: |
+          helm template pokeproxy deploy/helm/pokeproxy \
+            -f deploy/envs/prod/values.yaml \
+            -n pokeproxy \
+          | kubeconform -strict -ignore-missing-schemas -kubernetes-version 1.30.5 -summary
 
   build-pokeproxy:
     name: Build pokeproxy
@@ -159,3 +165,49 @@ jobs:
           trivyignores: app/.trivyignore
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - run: cosign sign --yes ghcr.io/idanbro/mock-downstream@${{ steps.build.outputs.digest }}
+
+  build-e2e:
+    name: Build e2e
+    needs: [build-pokeproxy]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: sha
+        run: |
+          full="${{ github.event.pull_request.head.sha || github.sha }}"
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+          echo "short=${full:0:7}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: app
+          file: app/Dockerfile.e2e
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/idanbro/pokeproxy-e2e:${{ steps.sha.outputs.short }}
+          build-args: BASE_IMAGE=ghcr.io/idanbro/pokeproxy@${{ needs.build-pokeproxy.outputs.digest }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha,scope=pokeproxy-e2e
+          cache-to: type=gha,mode=max,scope=pokeproxy-e2e
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ghcr.io/idanbro/pokeproxy-e2e@${{ steps.build.outputs.digest }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          trivyignores: app/.trivyignore
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - run: cosign sign --yes ghcr.io/idanbro/pokeproxy-e2e@${{ steps.build.outputs.digest }}

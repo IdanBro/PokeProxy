@@ -35,7 +35,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: e2e
-          image: "{{ .Values.e2e.image.repository }}:{{ .Values.e2e.image.tag }}"
+          image: "{{ include "pokeproxy.image" .Values.e2e.image }}"
           imagePullPolicy: {{ .Values.e2e.image.pullPolicy }}
           args:
             - --proxy-url={{ .Values.e2e.proxyUrl }}

@@ -93,3 +93,49 @@ Per-environment values live outside the chart, at `deploy/envs/<env>/values.yaml
 | `prod` | `deploy/envs/prod/values.yaml` | `.secrets/sealing-key-prod.yaml` | `pokeproxy-prod` / `k3d-pokeproxy-prod`, port 8081 |
 
 The old chart-internal `values-prod.yaml` was deleted rather than moved: it described an environment that did not exist and could not deploy (see S4 in `WORKLOG.md`). The prod environment and its Argo CD bootstrap are Part 3 step 4b.
+
+## GitOps (prod stand-in)
+
+There is no real production cluster for this assignment, so `prod` is a second k3d cluster on the same laptop: its own context, its own Argo CD, its own sealing key, its own port. That converts the CD half of Part 3 from described to demonstrated.
+
+```bash
+bash scripts/bootstrap-prod.sh
+```
+
+Idempotent, and the order matters:
+
+| # | Step | Why here |
+|---|---|---|
+| 1 | Create `pokeproxy-prod` if absent | reuses an existing cluster rather than failing on it |
+| 2 | Apply `deploy/k8s/namespace.yaml` | PSA labels must exist before any workload lands |
+| 3 | `seal-hmac.sh --env prod` | generates `.secrets/sealing-key-prod.yaml` and applies it **before** installing the controller, so the controller adopts our key instead of minting its own |
+| 4 | Install Argo CD | needs the SealedSecret CRD from step 3 to be able to sync the chart |
+| 5 | Apply the `Application` | |
+| 6 | Wait for `Synced` / `Healthy`, then probe the ingress | fails loudly with the Application and pod state if it doesn't converge |
+
+The namespace is deliberately **not** owned by Argo CD (`CreateNamespace=false`): its PSA labels are a cluster-admin concern, and letting the app's own sync manage the boundary it runs inside is a circularity I'd rather not have.
+
+### What Argo CD watches
+
+`deploy/argocd/application.yaml` — `repoURL` the GitHub repo, `targetRevision: main`, `path deploy/helm/pokeproxy`, `helm.valueFiles: ["../../envs/prod/values.yaml"]`. Helm `valueFiles` may resolve outside the Application's `path`; the boundary Argo CD enforces is the **repository root**, not the app path.
+
+`syncPolicy.automated` with `prune` and `selfHeal`, plus `retry.limit: 3` with exponential backoff. The bound is load-bearing: `selfHeal` combined with a PostSync E2E that keeps failing would otherwise re-sync and re-run the check against a broken deployment indefinitely.
+
+Argo CD reads from **GitHub, not the working tree** — an uncommitted or unpushed change is invisible to it. For verifying a branch before it merges, `ARGOCD_TARGET_REVISION=<branch> bash scripts/bootstrap-prod.sh` points the Application at that branch instead of `main`.
+
+### Reconciliation interval
+
+`deploy/argocd/install-values.yaml` sets `timeout.reconciliation: 30s`, down from the chart default of 180s. Stated plainly because it directly moves the "commit to serving" number: a real setup would make this event-driven with a repo webhook (near-zero delay) rather than shortening a poll. Polling at 30s is the honest local stand-in for that, not a claim about how fast Argo CD is by default.
+
+### Image references
+
+`deploy/envs/prod/values.yaml` pins **tag and digest** per image; the chart's `pokeproxy.image` helper emits `repository@digest` when a digest is set and falls back to `repository:tag` when it isn't. A git sha makes a tag *unique*, not *immutable* — a rebuild against a moved base image republishes different bytes under the same tag, and `IfNotPresent` then leaves different nodes running different builds. The triples are seeded by hand once and owned by CI's promote job from then on.
+
+### Delta from a real production
+
+| Here | A real production |
+|---|---|
+| `mock-downstream.enabled: true` — the E2E's delivery assertion needs a sink inside the cluster | a real downstream, with the E2E asserting against a synthetic endpoint instead, and `allow-pokeproxy-egress-to-dependencies` extended to reach it |
+| The E2E Job mounts the real HMAC signing key | a dedicated test credential — not possible today, the app validates against a single key (M3) |
+| Sealing key generated locally and gitignored | a KMS-backed or externally managed key, with the public half committed |
+| `server.insecure: true`, port-forward access | TLS termination and real SSO in front of the Argo CD server |
