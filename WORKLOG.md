@@ -6,7 +6,7 @@ This document is the persistent engineering state for the assignment. I update i
 
 ## Current State
 
-**Current phase:** **Part 2 — Infrastructure & Deployment, steps 1–8 of 10 done.** A real k3d cluster is running, reachable from the host through Traefik, with secrets, ingress, and network policy all live and verified — not just rendered. Design agreed and recorded in `docs/planning/part-02-infrastructure-deployment.md`; the Part 2 section below carries decisions and measured results. Branch `feature/infra-and-deployment`. Part 1 is functionally complete (detail retained below).
+**Current phase:** **Part 2 — Infrastructure & Deployment is complete — all 10 of 10 steps done.** PokeProxy, Redis, and mock-downstream run in a real k3d cluster, reachable through a real ingress, with secrets sealed, network policy enforced, rollouts proven safe under live load, and every fixed issue documented with a write-up. Design and decisions are recorded in `docs/planning/part-02-infrastructure-deployment.md`; the Part 2 section below carries the day-by-day narrative and measured results. Branch `feature/infra-and-deployment`. Part 1 remains functionally complete (detail retained below). **Part 3 (CI/CD & GitOps) not started.**
 
 **Part 1 (complete) — both final-audit SHOULD FIX findings closed.** R1 (retry attempt-timeout, `docs/issues/012-retry-attempt-timeout.md`) and D1 (consolidated known-gaps write-up, `docs/issues/000-known-gaps.md`) are fixed. 15 issue IDs now fixed across 12 changes, 13 write-ups, **101 tests** passing from `app/` and the repo root, `ruff` clean. R2, R3, R4 (nice to have, from the same audit) and the pre-existing NICE TO HAVE backlog (L1, L2, L5, M6, H6) remain open, tracked in `docs/issues/000-known-gaps.md`. Part 1 is functionally complete; Part 2 not started.
 
@@ -28,12 +28,12 @@ This document is the persistent engineering state for the assignment. I update i
 - **Wave 5 (M7-CWD) — test suite no longer depends on the invoking shell's working directory.** New `app/tests/conftest.py` pins CWD to `app/` via `pytest_configure()`, computed from the test files' own location. Verified from three different working directories (`app/`, repo root, `/tmp`) — 94/94 every time. Write-up: `docs/issues/011-test-suite-cwd-dependence.md`.
 
 **Currently working on:**
-- Part 2, stopped after step 8 (Ingress + NetworkPolicy) for review before step 9. R2, R3 and the pre-existing NICE TO HAVE items are open and tracked in `docs/issues/000-known-gaps.md`. **M2's ingress half and M5's partial mitigation are closed and live-verified.**
-- **Local environment state:** k3d cluster `pokeproxy` running with `8080:80@loadbalancer` port-mapped to the host, full stack deployed via `helm upgrade --install -f values-local.yaml`, healthy, reachable at `http://localhost:8080/stream`. `deploy/k3d/cluster.yaml` now carries that port mapping. `kubectl`/`k3d`/`kubeseal` installed in WSL at `~/.local/bin`. `.secrets/sealing-key.yaml` (gitignored) holds the pinned sealing keypair; `deploy/helm/pokeproxy/values-local.yaml` (committed) holds the sealed HMAC ciphertext.
+- Nothing in flight. Part 2 is done and stopped for review. R2, R3 and the pre-existing NICE TO HAVE items (L1, L2, L5) stay open, tracked in `docs/issues/000-known-gaps.md` — none block Part 3.
+- **Local environment state:** k3d cluster `pokeproxy` running with `8080:80@loadbalancer` port-mapped to the host, full stack deployed via `helm upgrade --install -f values-local.yaml` (helm release revision 7), healthy, reachable at `http://localhost:8080/stream`. `deploy/k3d/cluster.yaml` carries that port mapping. `kubectl`/`k3d`/`kubeseal` installed in WSL at `~/.local/bin`. `.secrets/sealing-key.yaml` (gitignored) holds the pinned sealing keypair; `deploy/helm/pokeproxy/values-local.yaml` (committed) holds the sealed HMAC ciphertext. `values-prod.yaml` exists but has never been deployed anywhere — no production cluster exists.
 
 **New standing rule (2026-08-23), added to `CLAUDE.md`:** write self-explanatory code with no comments (SOLID where the code has real structure to benefit — not forced onto trivial code); when a change makes existing code or tests obsolete, remove them as part of that change instead of leaving dead weight, scoped to what the current change touches. Applied immediately in step 3 — see below.
 
-**Repository state:** branch `feature/infra-and-deployment`, based on `395479c`. Untracked as of this entry: `app/Dockerfile`, `app/.dockerignore`, `docs/planning/part-02-infrastructure-deployment.md`. Nothing modified, nothing committed.
+**Repository state:** branch `feature/infra-and-deployment`. All 9 prior Part 2 steps committed and pushed individually; step 10's changes (issue write-ups 013–016, `values-prod.yaml`, the two Helm template bugs it surfaced) are staged in the working tree, not yet committed as of this entry.
 
 **Environment facts measured 2026-08-22/23, not assumed:** Docker Desktop 27.3.1 (was not running at session start — a bootstrap prerequisite that must fail loudly). `kubectl` v1.30.5 on Windows. Docker Desktop's own VM: **7.62 GiB / 8 vCPU** (confirmed via `docker info` — identical to WSL Ubuntu's own `free -h`/`nproc`, since Docker Desktop's WSL2 backend shares that same resource pool, not a separate allocation) — the ceiling Part 4's monitoring stack has to fit under. In WSL: `helm` present; **`kubectl` v1.30.5 and `k3d` v5.9.0 now installed** at `~/.local/bin` (step 6), pinned from each project's own official release channel (`dl.k8s.io`, `k3d-io/k3d` GitHub Releases) rather than `curl | bash`.
 
@@ -46,8 +46,9 @@ This document is the persistent engineering state for the assignment. I update i
 **Why M2 deferred rather than fixed:** user's explicit call, consistent with the H5 percentile-removal precedent — this class of protection is also achievable at the ingress/reverse-proxy layer in Part 2 (e.g., an Ingress `client_max_body_size`-equivalent), which is the more standard place production systems put it and rejects before the request even reaches this process. Recorded as a Part 2 addition below (defense-in-depth, not a replacement for the app-level fix, which stays scoped and ready if picked back up first).
 
 **Next:**
-1. Part 2 step 9 — rollout / termination / measurement pass: rolling restart under live load (zero dropped requests), confirm a rules values edit actually triggers a rollout on a live `helm upgrade` (mechanics already proven in step 5, not yet proven live), and replace the provisional resource requests/limits with real `kubectl top` numbers under the load generator. Pending review of step 8.
-2. Remaining NICE TO HAVE items (L1, L2, L5, R2, R3) stay tracked in `docs/issues/000-known-gaps.md` and don't block Part 2.
+1. **Part 2 is complete.** Move to Part 3 — CI/CD & GitOps: a CI pipeline (lint/test/build), a CD side (GitOps preferred — Argo CD is the natural fit given the Helm chart already has one release per environment and `helm rollback`'s history), a post-deploy E2E gate, and a rollback story. Needs a fresh planning pass before implementation, per the CLAUDE.md working mode.
+2. Two Part 2 constraints Part 3 must respect, both already load-bearing: the E2E must use a **unique payload per run** (M4's dedup replays cached responses for repeated payloads, which would make a re-run fail against a healthy deployment) and the image build/import step must always target the **exact sha it's about to deploy** — this session hit sha drift three separate times (steps 6, 7, 8) from images built in an earlier turn against an older commit.
+3. Remaining NICE TO HAVE items (L1, L2, L5, R2, R3) stay tracked in `docs/issues/000-known-gaps.md`, unaffected by Part 2, available to pick up whenever.
 
 **R1 — per-attempt HTTP timeout now less than the retry deadline (final audit fix).** `Settings.forward_attempt_timeout_seconds` (`FORWARD_ATTEMPT_TIMEOUT_SECONDS`, default 3.0) replaces the hardcoded `read=10.0`/`write=10.0` in the shared `httpx.AsyncClient`, which previously equalled `FORWARD_DEADLINE_SECONDS` and let one slow attempt consume the whole retry budget. New `Settings.model_validator` rejects `attempt_timeout >= deadline` at startup by name, so the exact bug can't be reintroduced via misconfiguration. `main.py` gained `_build_http_client(settings)` so the client construction is independently testable. Live re-probe against the same black-hole socket used in the audit: **3 of 3 attempts in 9.70s**, was 1 of 3 in 10.17s. New `test_retry_timeout.py` uses a real TCP server (a custom `httpx` transport bypasses timeout enforcement entirely) — surfaced that Python 3.13's `asyncio.Server.wait_closed()` also waits for already-accepted connections' handlers to finish, so the test's hung-server fixture cancels its handler tasks explicitly rather than waiting on them. 7 new tests (94 → 101): 5 in `test_config.py`, 2 in `test_retry_timeout.py`. `ruff check .` clean. Full detail in `docs/issues/012-retry-attempt-timeout.md`.
 
@@ -143,6 +144,8 @@ Items discovered during the Part 1 review that intentionally belong to a later P
 - **M4 is now implemented — the load generator will stop generating load as-is.** It picks from 12 fixed payloads (`POKEMON_DATA`, `random.choice` at `load_generator.py:92`), and protobuf serialization of identical field values is byte-identical, so there are exactly 12 distinct body hashes. Dedup now genuinely skips the forward on a repeat, so the first dozen requests exercise the downstream path and everything else for the next `CACHE_TTL_SECONDS` is suppressed. A 60s run at 10 rps would forward ~12 of 600 requests. Confirmed by test, not just predicted — `test_dedup.py`. The generator needs a varying field (nonce or timestamp) to stay useful for load testing, and Part 4 dashboards will read as near-zero forward rate until it has one.
 - **M4 is now implemented — the post-deploy E2E must use a unique payload per run**, or flush the dedup key first. Re-running the same E2E payload inside the TTL produces no new downstream delivery — it replays the cached response instead — so the check fails on a healthy deployment. This is a correctness requirement for the Part 3 gate, not a nicety.
 - Tests use relative fixture paths (`load_rules("config/rules.json")`) and only pass when CWD is `app/`. Fixed as part of M7 so CI is not CWD-dependent.
+- **Sha-drift, observed three times in Part 2 (steps 6, 7, 8).** Any session gap where a commit lands between "build the image" and "deploy it" leaves the cluster running an image tagged for an older sha than `git rev-parse --short HEAD` now reports — `k3d image import` silently succeeds either way, so the mismatch only surfaces as `ImagePullBackOff` on the next deploy. Not a design flaw, just a manual-workflow gap that CI removes structurally: Part 3's pipeline must always build and import/push at the exact sha it's about to deploy, never reuse a cached image from an earlier step.
+- **`values-prod.yaml`'s `components.pokeproxy.rules` has no real downstream URLs** (Part 2 step 10). The chart now supports an explicit `url:` per rule (verified — it overrides the auto-derived mock-downstream URL), but the values file itself doesn't set one, since there's no real production downstream to point at. Whoever stands up a real deployment from this chart needs to add real URLs before disabling `mock-downstream`.
 
 **Part 4 — Observability**
 - Replace `/stats` with Prometheus instrumentation, reusing the Part 1 outcome-accounting seam (H4, H5).
@@ -468,6 +471,57 @@ Verified by execution, all five step-8 bullets:
 | `/stats`/`/health`/`/ready` not reachable via ingress | `404` for all three |
 | proxy→redis allowed, everything else denied | Unlabeled pod: DNS resolves, TCP fails to both redis and mock-downstream. Pokeproxy pod: TCP to redis succeeds in 89ms |
 | DNS still resolves | Confirmed via the unlabeled pod's `nslookup` and every successful forward this step |
+
+No Python changed.
+
+**Step 9 (rollout/termination/measurement pass) — done 2026-08-23.** Three things proven live that the chart's YAML alone couldn't prove.
+
+**Rolling restart under real load, via the real ingress (not port-forward).** `scripts/load_generator.py` at 30 rps / 100s against `http://localhost:8080/stream`, `kubectl rollout restart deployment/pokeproxy` triggered mid-run. **2487 sent, 0 errors, 0.0% error rate**, all 4 pods finished at 0 restarts. `preStop.sleep.seconds: 5` + `maxUnavailable: 0` did exactly their job.
+
+**Resource measurement — confirmed the step-5 numbers, changed nothing.** Sampled `kubectl top` through the rollout run plus a second 100 rps / 25s burst immediately after `redis-cli FLUSHALL` (forces real forwards, not cache replay). Peak pokeproxy CPU: **224m, during the rollout itself** (cold-start + full traffic share at once) — under the 250m request, nowhere near the 500m limit. Steady-state (both dedup-heavy and freshly-flushed): 2–26m across all three workloads; memory never moved from idle. **`values.yaml` unchanged** — this validated the provisional numbers rather than replacing them, which is a legitimate outcome for a measurement pass and worth stating plainly rather than tuning for the sake of showing motion. Caveat on record: this is dedup-heavy traffic by construction (12 fixed payloads); Part 3's load-generator uniqueness fix is the first chance to measure genuinely sustained fresh-forward load.
+
+**Rules edit → live rollout, proven functionally this time, not just structurally (step 5 only proved the checksum changes on paper).** Built a payload matching no current rule (`200 {}`), lowered the fire-rule's attack threshold via a values **file**, redeployed — new ReplicaSet, `--wait` succeeded, same payload now returns `200 {"status":"received"}`. Reverted; confirmed clean.
+
+**A real Helm bug, hit and diagnosed:** first attempt used `--set` to mutate one index of a list-nested-in-a-list — the new pod went **CrashLoopBackOff**, `"Invalid condition syntax: 'None'"`. `--set` on nested list indices doesn't merge cleanly with the base values; a documented Helm fragility. `maxUnavailable: 0` meant the two old pods kept serving the whole time — the cluster itself was never degraded, only that one rollout attempt was stuck. Fixed with a proper values file instead, verified via `helm template` before touching the cluster again. The failed revision is preserved in `helm history` — `helm rollback` was available the whole time; fixed forward instead.
+
+**A second lesson, about the app's own semantics:** the first post-revert check looked like the revert had failed (`200 {"status":"received"}` when `200 {}` was expected) — actually a stale Redis dedup hit, since dedup checks run *before* rule evaluation. `redis-cli FLUSHALL` plus a retest gave the real answer (`200 {}`, revert confirmed correct). Worth remembering: a repeated payload proves nothing about current rules unless the cache is accounted for.
+
+Verified by execution:
+
+| Check | Result |
+|---|---|
+| Rolling restart, 30 rps live load, real ingress | 2487 sent, **0 errors**, 0 pod restarts |
+| Resource peak (pokeproxy) | 224m CPU at rollout vs. 250m request / 500m limit |
+| Resource steady-state, all 3 workloads | 2–26m CPU; memory unchanged from idle |
+| Rules edit reaching running pods | `200 {}` → `200 {"status":"received"}` after redeploy, same payload |
+| Revert restores original behavior | `200 {}`, confirmed only after ruling out a cache false-positive |
+| `helm history` | Failed revision preserved; rollback available, fix-forward chosen |
+
+No Python changed. `values.yaml` unchanged.
+
+**Step 10 (values-prod.yaml + issue write-ups) — done 2026-08-23. Closes Part 2.** New `docs/issues/013-config-assumes-localhost.md` (H6), `014-mock-service-containerization.md` (L6), `015-container-entrypoint-preflight.md` (M6+R4), `016-ingress-body-size-cap.md` (M2 ingress half) — every issue ID fixed in Part 2 now has a write-up, matching Part 1's standard.
+
+**Writing `values-prod.yaml` found two real template bugs, neither hypothetical — both caught by actually rendering the file.**
+
+1. **`mock-downstream.enabled: false` didn't do anything.** `serviceaccount.yaml` already gated on `$spec.enabled` (step 4); `mock-downstream/deployment.yaml` and `service.yaml` never did. Fixed: wrapped both in `{{- if $spec.enabled }}`. Verified: `helm template -f values-prod.yaml` now renders 2 Deployments/Services/ServiceAccounts instead of 3.
+2. **An explicit per-rule `url` was silently discarded.** `configmap-rules.yaml`'s `merge (dict "url" $downstreamURL) .` put the derived URL in the merge *destination*, and Sprig's `merge` keeps the destination's value on conflict — so a rule's own `url` would always lose to the auto-derived mock-downstream one, even with mock disabled and no such Service to point at. Confirmed empirically before fixing (rendered a rule with an explicit override, got the mock URL back anyway). Fixed by swapping the merge order: `merge . (dict "url" $downstreamURL)`. Verified both ways — explicit `url` now wins when present; unmodified local `values.yaml` (no rule specifies one) renders byte-identical `rules.json` to before the fix, confirmed by redeploying to the live cluster and observing the pod-template hash **didn't change** (no spurious rollout), then a real signed request still behaved correctly.
+
+**`values-prod.yaml` is deliberately small** — three overrides only (image registry/tag with `CHANGEME` placeholders, `mock-downstream.enabled: false`, `ingress.className: nginx` + `bodyLimit.provider: nginx`), exactly what the design promised from the start, nothing extra invented.
+
+**One gap left honestly open, not papered over:** `values-prod.yaml` does not override `components.pokeproxy.rules` with real downstream URLs — with mock disabled and no rule specifying its own `url`, every rule still points at the now-nonexistent mock Service. The merge-order fix means the *mechanism* to override exists and is verified; the *values* don't, because inventing plausible fake production URLs would be fabrication. A real deployment reusing this chart needs to add explicit `url:` fields per rule when disabling mock.
+
+**Not deployed live** — no production cluster exists, declared out of scope from the first design pass. Verification is `helm lint --strict` and `helm template` only.
+
+Verified by execution:
+
+| Check | Result |
+|---|---|
+| `helm lint -f values-prod.yaml --strict` | Clean |
+| `helm template -f values-prod.yaml` | Mock resources correctly absent; nginx ingress annotation (`proxy-body-size: "1m"`) renders in place of the Traefik `Middleware` reference |
+| Explicit per-rule `url` override | Respected after the fix, confirmed via a standalone test render |
+| Local `values.yaml` behavior after the fix | Unchanged — same `rules.json`, same pod-template hash, real request still correct |
+
+**Part 2 — Infrastructure & Deployment is complete.** All 10 steps done. H6, H1-consequence, H7 (K8s half), L6, R4, M6, and M2 (ingress half) all closed with write-ups; the remaining Part 1 NICE TO HAVE backlog (L1, L2, L5) and R2/R3 stay open in `docs/issues/000-known-gaps.md`, none blocking. Next is Part 3 — CI/CD & GitOps.
 
 No Python changed.
 

@@ -72,8 +72,8 @@ The general rule "don't hand-roll infrastructure" is right, and for anything sta
 | 6 | k3d cluster definition, `k3d image import`, first `helm upgrade --install` | **Done** |
 | 7 | Sealed Secrets: controller, pinned sealing key, `seal-hmac.sh` | **Done** |
 | 8 | Ingress + Traefik body cap (M2) + NetworkPolicy | **Done** |
-| 9 | Rollout / termination / measurement pass | Not started |
-| 10 | `values-prod.yaml` + issue write-ups + WORKLOG | Not started |
+| 9 | Rollout / termination / measurement pass | **Done** |
+| 10 | `values-prod.yaml` + issue write-ups + WORKLOG | **Done** |
 
 ## Why the sealing key has to be pinned
 
@@ -383,3 +383,74 @@ Verified by execution, all five step-8 bullets:
 | DNS still resolves | Proven twice — the unlabeled pod's own `nslookup`, and every successful forward throughout this step, which requires DNS to work |
 
 No Python changed.
+
+## Step 9 — result
+
+Three things this step had to prove live, none of which the chart's own YAML could prove by itself: a rolling restart drops nothing under real traffic, a rules edit actually reaches running pods (not just renders a different checksum), and the resource requests/limits chosen in step 5 hold up against measured usage rather than a guess.
+
+**Rolling restart under live load.** Ran `scripts/load_generator.py` against the real ingress (`http://localhost:8080/stream`, not port-forward — this exercises the same Service-endpoint churn a real client would see) at 30 rps for 100s, triggering `kubectl rollout restart deployment/pokeproxy` at the 20s mark. Result: **2487 requests sent, 0 errors, 0.0% error rate** — `preStop.sleep.seconds: 5` plus `maxUnavailable: 0` did exactly what they're for. All 4 pods finished at `0` restarts.
+
+**Resource measurement, and an honest caveat about what it actually measures.** `scripts/load_generator.py` cycles 12 fixed payloads, and M4's dedup means only first-occurrence requests take the full decode → match → forward path — everything after that within `CACHE_TTL_SECONDS` replays from Redis, which is cheaper. Sampled `kubectl top` through two windows: the 30 rps / 100s run above (mixed fresh + dedup), and a second 100 rps / 25s burst run immediately after `redis-cli FLUSHALL` (forces every payload through a real forward at least once). Peak pokeproxy CPU observed across both runs: **224m, during the rollout itself** — a fresh pod cold-starting while simultaneously taking over a full share of live traffic. Steady-state, both dedup-heavy and freshly-flushed, stayed in the **2–26m** range. mock-downstream and redis stayed in **2–25m** throughout. Memory never moved from its idle baseline (pokeproxy ~46–48Mi, mock-downstream ~35Mi, redis ~3–7Mi) — this workload is CPU-bound, not memory-bound, at any load level tested here.
+
+**Conclusion: the provisional numbers from step 5 hold, unchanged.** `values.yaml` isn't touched by this step. The one number that actually got close to a limit was the rollout-moment 224m against pokeproxy's 250m *request* — under, not over, meaning the request was correctly sized to absorb exactly the moment it exists to protect (a burst of scheduling-guaranteed CPU during startup), and nothing came remotely close to any of the 500m/100m/100m *limits*. This is a measurement pass that validated a judgment call rather than corrected one — worth stating plainly rather than tuning numbers for the sake of showing motion. The honest caveat: this is dedup-heavy traffic by construction, not a worst-case all-unique-payload benchmark — Part 3's `load_generator.py` fix (payload uniqueness, already flagged in `WORKLOG.md`'s backlog) will be the first chance to measure genuinely sustained fresh-forward load, and these numbers should be re-checked then if traffic patterns turn out very different in practice.
+
+**Rules edit → live rollout, proven functionally, not just structurally.** Built a payload (`Growlithe`, Fire, `attack=60`) that matches no current rule (`200 {}`, confirmed). Redeployed with `components.pokeproxy.rules[0].match[1]` changed from `attack>80` to `attack>50`, via a values **file**, not `--set` — see below. New ReplicaSet appeared (`pokeproxy-5c64745db6-*`, replacing `pokeproxy-788f8dd8f4-*`), `--wait` succeeded. Resent the *identical* payload: **`200 {"status":"received"}`** — the exact same bytes that were rejected a moment ago now forward, purely because the running pods picked up the new rules ConfigMap via `checksum/config-rules`. This is the live confirmation step 5 could only prove on paper (the checksum changes when the content changes) — now proven to actually cause a behavioral change in a running cluster.
+
+**A real Helm bug, hit and diagnosed, not glossed over.** First attempt used `--set "components.pokeproxy.rules[0].match[1]=attack>50"` — the new pod went **CrashLoopBackOff** with `"rules configuration invalid ... Invalid condition syntax: 'None'"`. Diagnosis: `--set` mutating one index of a list-nested-inside-a-list-of-objects doesn't merge cleanly with the base `values.yaml`'s list — a known, documented Helm fragility, not something specific to this chart. `maxUnavailable: 0` meant the two old pods kept serving throughout — the cluster was never actually degraded, only the rollout itself was stuck. Fixed by using a proper values **file** (`-f`) with the complete rules list instead of a CLI index mutation, which rendered correctly (verified via `helm template` before touching the cluster again) and rolled out cleanly. The failed revision (4) is preserved in `helm history` — `helm rollback pokeproxy 3` was available the whole time as an alternative to fixing forward.
+
+**A second real lesson, this time about the app's own semantics, not Helm's:** the first post-revert check of the Growlithe payload returned `200 {"status":"received"}` — which looked like the revert had failed. It hadn't. `proxy.py`'s dedup check runs *before* rule evaluation, so the identical payload from the "after rule change" test was still a Redis cache hit, replaying the old cached response regardless of what the current rules said. `redis-cli FLUSHALL` plus a retest gave the real answer: `200 {}` — the revert was correct all along. Worth remembering for any future rule-behavior test against this app: a repeated payload proves nothing about current rules unless the cache is accounted for.
+
+Verified by execution:
+
+| Check | Result |
+|---|---|
+| Rolling restart under 30 rps live load via real ingress | 2487 sent, **0 errors**, 0 pod restarts |
+| Resource peak (pokeproxy) | 224m CPU at rollout, vs. 250m request / 500m limit — comfortably absorbed |
+| Resource steady-state (all 3 workloads) | 2–26m CPU, memory unchanged from idle — well under every configured limit |
+| Rules edit reaching running pods | Same payload: `200 {}` → `200 {"status":"received"}` after redeploy |
+| Revert restores original behavior | `200 {}` again, confirmed only after ruling out a dedup cache-hit false positive |
+| `helm history` | Failed revision 4 preserved; rollback was available, fix-forward was chosen |
+
+No Python changed — `app/` and `scripts/load_generator.py` were used as verification tools, not modified. `values.yaml` unchanged — the measurement pass confirmed the existing numbers rather than replacing them.
+
+## Step 10 — result
+
+The last step: `values-prod.yaml`, and issue write-ups for the four Part 2 items that were only ever recorded as rows in `WORKLOG.md`'s backlog — `docs/issues/013-config-assumes-localhost.md` (H6), `014-mock-service-containerization.md` (L6), `015-container-entrypoint-preflight.md` (M6 + R4), `016-ingress-body-size-cap.md` (M2, ingress half).
+
+**Writing `values-prod.yaml` surfaced two real template bugs the local-only path had never exercised.** Neither was hypothetical — both were caught by actually rendering the file, not by reading the templates and reasoning about them.
+
+1. **`mock-downstream.enabled: false` didn't do anything.** `templates/serviceaccount.yaml` already gated on `$spec.enabled` (built that way in step 4), but `templates/mock-downstream/deployment.yaml` and `service.yaml` never did — they rendered unconditionally regardless of the flag. `values-prod.yaml`'s entire premise ("mock disabled in prod") would have silently failed to disable anything. Fixed by wrapping both templates in `{{- if $spec.enabled }}`, matching the pattern already established for ServiceAccounts. Verified: `helm template -f values-prod.yaml` now renders 2 Deployments/Services/ServiceAccounts instead of 3, and `helm lint --strict` stays clean.
+
+2. **An explicit per-rule `url` was silently discarded, always overwritten by the auto-derived mock-downstream URL.** `configmap-rules.yaml`'s `merge (dict "url" $downstreamURL) .` puts the derived URL in the *destination* map, and Sprig's `merge` keeps the destination's value on key conflicts — so even if a rule in `values-prod.yaml` specified its own real downstream `url`, the template would still overwrite it with a URL pointing at a Service that, with mock-downstream disabled, no longer exists. Confirmed empirically before fixing: rendered a rule with `url: http://explicit-override.example.com/pokemon` and got the mock URL back regardless. Fixed by swapping the merge order — `merge . (dict "url" $downstreamURL)` — so the rule's own value wins when present, and the mock-downstream derivation only fills in when a rule doesn't specify one. Verified both directions: an explicit `url` is now respected, and re-rendering the *unmodified* local `values.yaml` (no rule specifies a `url`) produces byte-identical output to before the fix — confirmed by redeploying to the live cluster and observing the pod-template hash didn't change (no unnecessary rollout), then a real signed request still correctly returns `200 {}` for a non-matching payload.
+
+**`values-prod.yaml` is deliberately small — three overrides, exactly what the design promised, nothing invented:**
+```yaml
+components:
+  pokeproxy:
+    image:
+      repository: ghcr.io/CHANGEME/pokeproxy
+      tag: CHANGEME
+  mock-downstream:
+    enabled: false
+ingress:
+  className: nginx
+  bodyLimit:
+    provider: nginx
+```
+`CHANGEME` placeholders follow the same fail-loud convention already established for local image tags and the unsealed HMAC default — a forgotten registry/tag produces an immediately diagnosable `ErrImagePull`, not a quiet wrong deploy.
+
+**An honest, undisguised gap, left as a gap rather than papered over:** `values-prod.yaml` does *not* override `components.pokeproxy.rules` with real downstream URLs. With mock-downstream disabled and no rule specifying its own `url`, every rule still resolves to the now-nonexistent mock Service's DNS name — confirmed directly in the rendered `rules.json`. The template now *supports* per-rule URL overrides (that's what the merge-order fix was for), but `values-prod.yaml` doesn't supply any, because inventing plausible-looking production backend URLs to make the file look complete would be fabrication, not documentation. A real production deployment reusing this chart must add explicit `url:` fields to `components.pokeproxy.rules` — the mechanism exists and is verified; the values themselves don't, because there's nothing real to point them at.
+
+**Not deployed live.** No production cluster exists to demonstrate against — this was declared explicitly out of scope from the very first design pass. Verification here is `helm lint --strict` and `helm template`, confirming the file is syntactically correct, gates the right resources, and switches the ingress provider correctly (`nginx.ingress.kubernetes.io/proxy-body-size: "1m"` in place of the Traefik `Middleware` reference) — not that it would deploy cleanly end-to-end against a real cluster with real secrets and real downstream services.
+
+Verified by execution:
+
+| Check | Result |
+|---|---|
+| `helm lint deploy/helm/pokeproxy -f values-prod.yaml --strict` | Clean |
+| `helm template -f values-prod.yaml` | 2 Deployments/Services/ServiceAccounts (mock correctly absent), 1 Ingress with the nginx annotation, 6 NetworkPolicies (mock-targeting rules become harmless no-ops, matching zero pods) |
+| Explicit per-rule `url` respected | Confirmed via a standalone test override before wiring it into `values-prod.yaml` |
+| Local `values.yaml` behavior unchanged by the merge-order fix | Same rendered `rules.json`, same pod-template hash on redeploy, real signed request still correct |
+| Full app test suite | Not re-run — no Python changed this step |
+
+This closes Part 2. All 10 steps done; `docs/issues/` now covers every fixed issue across both Parts with a write-up, and `docs/issues/000-known-gaps.md` remains the accurate record of what's still open and why.

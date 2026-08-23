@@ -1,4 +1,5 @@
 {{- $spec := index .Values.components "mock-downstream" -}}
+{{- if $spec.enabled }}
 {{- $fullname := include "pokeproxy.component.fullname" (dict "context" $ "component" "mock-downstream") }}
 apiVersion: apps/v1
 kind: Deployment
@@ -72,3 +73,4 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+{{- end }}

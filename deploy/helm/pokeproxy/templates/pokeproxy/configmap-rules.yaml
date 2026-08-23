@@ -3,7 +3,7 @@
 {{- $downstreamURL := printf "http://%s.%s.svc.cluster.local.:%v/pokemon" $mockName .Release.Namespace $mockSpec.port -}}
 {{- $rules := list -}}
 {{- range .Values.components.pokeproxy.rules }}
-{{- $rules = append $rules (merge (dict "url" $downstreamURL) .) }}
+{{- $rules = append $rules (merge . (dict "url" $downstreamURL)) }}
 {{- end }}
 apiVersion: v1
 kind: ConfigMap
