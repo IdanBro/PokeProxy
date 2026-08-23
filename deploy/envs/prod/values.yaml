@@ -1,7 +1,6 @@
 # Image tag/digest triples are seeded once by hand and owned by CI's promote job from then on.
 hmac:
   encryptedValue: AgBrTAA5nmXKMVWbwAOE/Z20V108qwhrShNcC0svod7S1P6lWYMpq1j9ZJc8dnbyntO94wlFm45hywXuHGGdjmR6DExrOd7PiFQy+Ob9SrgYiQNVeurPy54JUhxI9R4J+1Zbs0XVFA0vzI83SSeup16pN5NU4ev65bMAZwaJeV9h26VMTWDIEbdr5gnuRYcaKraKSjlaTSK2DVUwzTG+BPrQi+3x/xp+mlKcfNhslDdYlP73vu+O4AhZBo7dwzqU5e9Z/heajHJ/poN+6382y0dcFRXR7CxtwiJb93bC9698pS4uDQ1cb3O/wSWiHjyeyJjDEczoNIk8ZDRNl3uB8KNzDh2pjOcvoha7Xp4I0O8aP8DV/BdvlL9ySf63AwmWXCYONj8SbSO9cGV3BmJQTfbiO7GjSarsx1EMhXAJshdLGt+dgYRFzQZNU2m9DsKzfV4GiyaMCYohGyICo8SQ73rrsAdNbN5+1SNc5FeLC5h2Mmt7OBQjAAb+jdlvR6Ska+UGjmf+Q9VEly8gQfuzJ82bji7gHMBpwAA1OvIky4JD71njVpPMMV3//vXYQs6StFZbi9j5Yu8zXuY2T7QbmtzVcZgxxSRD5UfMPDBoaDAU4n/7YztMjAhCcgDviaJoBXKoiCvHRbrO7cb0WpOCgtoNQEOa1/4Bg4ugf5yqev2iyDd8a2k8kttuOLX4dkEwBIssGDKfUfNclTEVEAr+QMf525XW3ngEip4SMaSJFWWnb+a4GxM=
-
 ingress:
   enabled: true
   className: traefik
@@ -9,27 +8,23 @@ ingress:
     enabled: true
     maxBytes: 1048576
     provider: traefik
-
 networkPolicy:
   enabled: true
-
 e2e:
   enabled: true
   image:
     repository: ghcr.io/idanbro/pokeproxy-e2e
-    tag: 449c505
-    digest: sha256:e35f68f59ea482b34ee4aaab723eb28e66275f9e3e57e83fca04c24a009ba010
-
+    tag: a365e7f
+    digest: sha256:e2e092f4c804a83fc7eee00807b488d50e06ffa0d1ee7c15492b84bca815e65f
 components:
   pokeproxy:
     image:
       repository: ghcr.io/idanbro/pokeproxy
-      tag: 449c505
-      digest: sha256:8b89ddd6ba3ac62317572987189f9802220868224eed6db250db2d93788c431c
-
+      tag: a365e7f
+      digest: sha256:442c22df888d094d088dc635b5fec22395dcc046fd29b93a08cbbb247c4ceb2a
   mock-downstream:
     enabled: true
     image:
       repository: ghcr.io/idanbro/mock-downstream
-      tag: 449c505
-      digest: sha256:346a4aaa488d7025e70e52ae15e0e3c226259483f248fd262aea99eee7fab4dd
+      tag: a365e7f
+      digest: sha256:71fb944db0ab493a33af1ec15b51ba6c3f81361ac4a9c4953e9bdc833e7bdc6e
