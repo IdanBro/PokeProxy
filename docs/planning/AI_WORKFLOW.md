@@ -548,3 +548,27 @@ Factual conversation-flow notes, appended per workstream. What the session focus
 **Fixed N8 in passing** since the README was being edited anyway: it claimed re-sealing happens on a "fresh clone or fresh cluster", but session 08's from-zero run proved a fresh cluster with the key still on disk correctly does *not* re-seal.
 
 **Result:** `scripts/{deploy,seal-hmac}.sh` context-pinned; five chart templates gated; `deploy/README.md` updated to match and N8 corrected; write-ups `docs/issues/019-deploy-scripts-unpinned-kube-context.md` and `020-pokeproxy-enabled-flag-incomplete.md`. Joint verification: E2E through the real ingress 11/11, `pytest -q` 106 passed, `ruff` clean. S4 and N1–N7 remain open, untouched. Stopped here for review.
+
+### Session 10 — Part 3 design (2026-08-23)
+
+**Focus:** design the whole delivery flow before writing anything. Explicit instruction, and the one that shaped the session: *do not call a process GitOps if CI is directly mutating the cluster behind git's back.*
+
+**The design fell out of one fact rather than a preference.** GitHub-hosted runners cannot reach a k3d cluster on this laptop — no inbound route. So any design where CI runs `kubectl`/`helm` against the target needs a self-hosted runner here, which is precisely the anti-pattern the instruction named. A pull-based agent inside the cluster is the only thing that connects cloud CI to this cluster at all. That picked Argo CD; everything else followed.
+
+**Three corrections I made, each changing the architecture:**
+
+1. **No ephemeral CI cluster.** Claude's design put the real gate in a throwaway k3d inside the runner: deploy the just-built image there, run the E2E, and only promote if it passes — so a bad image never enters desired state. I overruled it: CI and production are different clusters from my dev k3d, and I'd rather deploy to prod and verify there, leaving the ephemeral environment to a later step. Claude accepted and then stated the cost plainly rather than smoothing it over — **verification becomes detection, not prevention** — and narrowed it to exactly one escaping failure class (pods healthy but functionally wrong, exposed for one E2E run), showing that crash/probe/pull failures still can't reach users because of `maxUnavailable: 0`.
+
+2. **No production cluster exists**, so I asked to work around it without pretending to test. Claude proposed a second local k3d cluster (`pokeproxy-prod`, port 8081, own context, own Argo CD, own sealing key) as the stand-in, arguing it satisfies "a whole different cluster" literally — separate control plane, separate context, images pulled over the network from a real registry — and converts the entire CD half from described to demonstrated. Took it.
+
+3. **Short-sha tags** over the proposed full-sha. Consistency with `deploy.sh` and Part 2's artifacts mattered more than `github.sha` being natively available.
+
+**A question I asked that changed my mind rather than the design:** *isn't the commit sha immutable enough for an image tag?* The answer that landed: the commit sha is immutable, the **tag** isn't — it's a rewritable label pointing at a digest. The concrete break is re-running a build job after `python:3.13-slim-bookworm` has moved (that's N5), which republishes different bytes under the same tag; with `IfNotPresent`, nodes that already pulled keep old layers and nodes that scale up later get new ones, so two builds serve under one version string. Kept the digest.
+
+**Two things I asked to be explained more simply, and both were worth pinning down:** why the E2E needs its own Dockerfile (answer: strictly it doesn't — the app image already carries `httpx`, `protobuf` and the generated `pokemon_pb2`, so the choice is a four-line derived image versus a ConfigMap-mounted script; picked the derived image to keep test code out of production and stay portable), and what was actually wrong with `values-prod.yaml` (S4: it disables the mock but the rules still point at the mock's Service, and the egress NetworkPolicy would block a real external downstream — so it lints clean and is dead on arrival).
+
+**A correction Claude made to something I'd already approved.** I approved deleting `values-prod.yaml`. While detailing step 4 Claude found that Argo CD rejects Helm `valueFiles` resolving outside the Application's `path`, which kills the proposed `deploy/envs/` layout unless a multi-source Application is added. Recommendation changed to keeping values files inside the chart and **rewriting** `values-prod.yaml` as the GitOps desired state — same outcome for S4, less churn — and it flagged the reversal explicitly instead of quietly changing what I'd agreed to.
+
+**Verified before the plan was written, not assumed:** Traefik's Service name/port (gives the E2E its in-cluster URL), that `main` has no branch protection (the promote job can push directly), `amd64`, `git rev-parse --short` = 7 chars (so CI and `deploy.sh` agree), that the downstream forward is synchronous at `proxy.py:123` (so the E2E has no polling race), and that `ruff format --check` would reformat 13 of 27 files (so it's deliberately excluded from CI).
+
+**Result:** agreed plan at `docs/planning/part-03-cicd-gitops.md` — nine decisions, seven ordered steps, repository layout, and an honest verification/rollback model. Step 3 (the E2E) deliberately precedes step 4 (Argo CD) because it's provable on the cluster that already exists. `WORKLOG.md` updated with the design and five new backlog items the design opened. No implementation; stopped for approval of step 1.

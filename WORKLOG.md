@@ -6,7 +6,9 @@ This document is the persistent engineering state for the assignment. I update i
 
 ## Current State
 
-**Current phase:** **Part 2 — Infrastructure & Deployment: complete and re-audited at HEAD `cd72953` on 2026-08-23. No blockers. S5 and S6 fixed same-day and verified live; S4 plus eight NICE TO HAVE remain open.** PokeProxy, Redis, and mock-downstream run in a real k3d cluster, reachable through a real ingress, with secrets sealed, network policy enforced, rollouts proven safe under live load, and every fixed issue documented with a write-up. Design and decisions are recorded in `docs/planning/part-02-infrastructure-deployment.md`; the Part 2 section below carries the day-by-day narrative and measured results, and that file's two audit sections — **"Part 2 completion audit — 2026-08-23"** and **"Part 2 re-audit at HEAD `cd72953` — 2026-08-23"** — carry the full evidence. Branch `feature/infra-and-deployment`. Part 1 remains functionally complete (detail retained below). **Part 3 (CI/CD & GitOps) not started.**
+**Current phase:** **Part 3 — CI/CD & GitOps: designed and agreed on 2026-08-23, no implementation yet.** The full plan — final pipeline, nine decisions, seven ordered steps, repository layout, verification and rollback model — is `docs/planning/part-03-cicd-gitops.md`. Branch `feature/gitops-ci-cd`, working tree clean at `d181de7`. Nothing under `.github/` exists yet. Step 1 (CI lint + test) is next and awaits approval.
+
+**Part 2 — Infrastructure & Deployment: complete and re-audited at HEAD `cd72953` on 2026-08-23. No blockers. S5 and S6 fixed same-day and verified live; S4 plus eight NICE TO HAVE remain open.** PokeProxy, Redis, and mock-downstream run in a real k3d cluster, reachable through a real ingress, with secrets sealed, network policy enforced, rollouts proven safe under live load, and every fixed issue documented with a write-up. Design and decisions are recorded in `docs/planning/part-02-infrastructure-deployment.md`; the Part 2 section below carries the day-by-day narrative and measured results, and that file's two audit sections — **"Part 2 completion audit — 2026-08-23"** and **"Part 2 re-audit at HEAD `cd72953` — 2026-08-23"** — carry the full evidence. Part 1 remains functionally complete (detail retained below).
 
 **Part 2 audit result (2026-08-23) — deployed behavior verified at HEAD `721b8fc`, not just manifest syntax.** Rebuilt both images at the HEAD sha, re-imported, `helm upgrade --install --atomic` → revision 8, 4/4 pods, 0 restarts. What was proven by execution: a signed request through the **real ingress** forwards and lands in mock-downstream; a repeated payload is deduped (each unique payload appears exactly once in `/received`); a 2 MiB body is rejected **413 at the ingress**; `/health`, `/ready`, `/stats` are **404** through the ingress; scaling Redis to zero leaves pods `Ready` with **zero 5xx** and 0 restarts; a `rollout restart` under **20 rps of all-unique payloads** produced **1113/1113 × 200, 0 errors**; a `privileged`/`runAsUser: 0` pod is **rejected by PSA**; an unlabeled pod is refused by Redis, mock-downstream *and* pokeproxy; the container runs as `uid=10001` on a read-only `/app`; `pytest -q` **106 passed** (was recorded as 101 — that count predated the step-2 entrypoint tests), `ruff` clean.
 
@@ -187,8 +189,16 @@ Items discovered during the Part 1 review that intentionally belong to a later P
 - **Sha-drift, observed three times in Part 2 (steps 6, 7, 8).** Any session gap where a commit lands between "build the image" and "deploy it" leaves the cluster running an image tagged for an older sha than `git rev-parse --short HEAD` now reports — `k3d image import` silently succeeds either way, so the mismatch only surfaces as `ImagePullBackOff` on the next deploy. Not a design flaw, just a manual-workflow gap that CI removes structurally: Part 3's pipeline must always build and import/push at the exact sha it's about to deploy, never reuse a cached image from an earlier step.
 - **`values-prod.yaml`'s `components.pokeproxy.rules` has no real downstream URLs** (Part 2 step 10). The chart now supports an explicit `url:` per rule (verified — it overrides the auto-derived mock-downstream URL), but the values file itself doesn't set one, since there's no real production downstream to point at. Whoever stands up a real deployment from this chart needs to add real URLs before disabling `mock-downstream`.
 
+**Opened by the Part 3 design (2026-08-23) — not blocking, logged so they aren't discovered later**
+- **`mock_service.received_pokemon` grows forever.** In-process list, never trimmed. Harmless in dev; on a long-lived prod cluster every PostSync E2E run appends one more entry. Bound it, or have the E2E clear only its own entries.
+- **The prod sealing key will be gitignored like the dev one**, so a fresh clone cannot reconstitute the prod cluster's HMAC secret without regenerating and re-sealing. Same accepted trade-off already documented for dev — restated because it now applies to the environment CI promotes into.
+- **Argo CD admin credentials need a handling decision** — the bootstrap prints the generated password; that is fine for a laptop stand-in and not fine for anything real.
+- **Base images are still tag-pinned, not digest-pinned** (N5). Part 3 makes *our* images digest-pinned, which sharpens rather than solves this: a build re-run can still produce different bytes for the same commit because the base moved.
+- **Deferred by decision, not oversight: an ephemeral k3d cluster inside the CI runner** as a pre-promotion gate. It is additive — the E2E is already a URL-parameterised Job — so adding it later is a workflow job, not a redesign.
+
 **Part 4 — Observability**
 - Replace `/stats` with Prometheus instrumentation, reusing the Part 1 outcome-accounting seam (H4, H5).
+- **Which cluster gets the monitoring stack?** Part 3 introduces a second one. Argo CD and the GitOps flow live in `k3d-pokeproxy-prod`; `k3d-pokeproxy` is the dev throwaway. Decide when Part 4 begins.
 - **M4 consequence, already satisfied by the seam:** `duplicate_suppressed` is already its own terminal outcome (implemented in M4, via the same `StatsRegistry.record_outcome()` seam H4 built) — carry the label through to Prometheus and make sure it's distinguishable on the dashboard from a genuine drop in inbound traffic.
 - `StatsRegistry` keys on downstream URL via `setdefault` — bounded by the rules file today, but it is an unbounded-cardinality pattern that must not be carried into Prometheus labels (L4).
 - Move operational endpoints (`/stats`, `/metrics`) onto a port the public Service does not expose (M5).
@@ -569,7 +579,37 @@ No Python changed.
 
 ## Part 3 — CI/CD & GitOps
 
-_Not started._
+**Design agreed 2026-08-23. No implementation yet.** Full reasoning, alternatives, step detail and the verification/rollback model: `docs/planning/part-03-cicd-gitops.md`. Only decisions and measured results go here.
+
+**Stack:** GitHub Actions (lint · test · build · promote, never touching a cluster) · GHCR with short-sha tags **and** digest pinning · Argo CD reconciling `main` into a second k3d cluster · a PostSync Job sending real protobuf + HMAC through Traefik and asserting the mock downstream received it · rollback by git revert via a `workflow_dispatch` workflow.
+
+**The constraint that decided the architecture:** GitHub-hosted runners cannot reach a cluster on this laptop. Any design where CI runs `kubectl`/`helm` against the target needs a self-hosted runner here, which is CI mutating the cluster behind git's back. A pull-based agent in the cluster isn't a preference — it's the only thing that connects cloud CI to this cluster.
+
+**Decisions that overruled my initial recommendation, all deliberate:**
+- **No ephemeral CI cluster.** I proposed a throwaway k3d inside the runner as a pre-promotion gate — the strongest option, because a failing image never enters desired state. Overruled: deploy to prod and verify there. Consequence, stated plainly rather than smoothed over: **verification becomes detection, not prevention.** Exactly one failure class escapes — pods healthy but functionally wrong — for the duration of one E2E run. Crash/probe/pull failures still can't reach users (`maxUnavailable: 0`), and unrenderable charts still die in CI.
+- **Second k3d cluster as the prod stand-in**, since no production cluster exists. Own context, own Argo CD, own sealing key, port 8081. Converts the whole CD half from described to demonstrated.
+- **Short-sha tags** kept over my full-sha proposal, for consistency with `deploy.sh` and Part 2's artifacts. Digest pinning kept alongside after I made the case that a git sha makes a tag *unique*, not *immutable* — a build re-run against a moved `python:3.13-slim-bookworm` base (N5) republishes different bytes under the same tag, and `IfNotPresent` then leaves different nodes on different builds.
+- **Argo CD Notifications auto-revert documented, not built.** A flaky E2E would otherwise become an automatic production change.
+
+**A decision reversed mid-planning, after it was already agreed.** Deleting `values-prod.yaml` (S4) was agreed. Detailing step 4 then turned up that Argo CD rejects Helm `valueFiles` resolving outside the Application's `path`, which kills the proposed `deploy/envs/` layout unless a multi-source Application is added. So values files stay inside the chart and `values-prod.yaml` is **rewritten** as the GitOps desired state instead of deleted — same outcome for S4, less churn. Called out explicitly rather than quietly swapped, since it changes an already-agreed decision.
+
+**Verified before the plan was written, so it doesn't rest on assumptions:**
+
+| Check | Result |
+|---|---|
+| Traefik Service | `traefik.kube-system`, `80:32637/TCP` — gives the E2E its in-cluster URL |
+| `main` branch protection | none (`404 Branch not protected`) — the promote job can push directly |
+| Docker server arch | `amd64` — single-platform builds |
+| `git rev-parse --short HEAD` | **7 chars**, so CI's `${GITHUB_SHA:0:7}` and `deploy.sh` agree |
+| Is the downstream forward synchronous? | **yes** — `proxy.py:123` awaits the forward before responding, so the E2E has no polling race |
+| `ruff format --check` | would reformat **13 of 27** files → deliberately not added to CI |
+| Repo visibility | PUBLIC → GHCR packages can be public, cluster pulls anonymously |
+
+**Seven ordered steps:** (1) CI lint+test · (2) CI build+push to GHCR · (3) **E2E script, derived image, hook Job, 3 NetworkPolicy rules — proven on the existing dev cluster** · (4) prod cluster + Argo CD + rewritten `values-prod.yaml` · (5) CI promote, measure commit→serving · (6) `rollback.yml` and all three failure scenarios executed · (7) write-ups and docs.
+
+Step 3 precedes step 4 on purpose: it's the highest-value and highest-risk piece, it's fully provable on the cluster that already exists, and it stands alone even if the prod cluster never happens.
+
+**Closes when implemented:** S4, N7, and the sha-drift class recorded three times in Part 2 (once the cluster can only run a digest CI published, the drift is structurally impossible).
 
 ---
 
