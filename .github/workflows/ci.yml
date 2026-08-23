@@ -228,6 +228,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
+          token: ${{ secrets.PROMOTE_PUSH_TOKEN }}
       - id: sha
         run: echo "short=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
       - name: Write image tags and digests
@@ -261,6 +262,6 @@ jobs:
             echo "No changes to promote (image references already at $SHORT)."
             exit 0
           fi
-          git commit -m "chore(deploy): promote $SHORT" -m "pokeproxy@$POKEPROXY_DIGEST" -m "mock-downstream@$MOCK_DOWNSTREAM_DIGEST" -m "pokeproxy-e2e@$E2E_DIGEST"
+          git commit -m "chore(deploy): promote $SHORT [skip ci]" -m "pokeproxy@$POKEPROXY_DIGEST" -m "mock-downstream@$MOCK_DOWNSTREAM_DIGEST" -m "pokeproxy-e2e@$E2E_DIGEST"
           git pull --rebase origin main
           git push origin HEAD:main
