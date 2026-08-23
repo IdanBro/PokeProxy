@@ -28,7 +28,6 @@ require_command kubectl
 require_command helm
 require_command k3d
 require_command kubeseal
-require_command openssl
 require_command git
 
 docker info >/dev/null 2>&1 || {
