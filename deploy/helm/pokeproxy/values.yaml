@@ -56,6 +56,9 @@ components:
       tag: CHANGEME
       pullPolicy: IfNotPresent
     probes:
+      startup:
+        periodSeconds: 1
+        failureThreshold: 30
       liveness:
         path: /health
         periodSeconds: 10
@@ -85,6 +88,9 @@ components:
       pullPolicy: IfNotPresent
     maxMemoryMb: 128
     probes:
+      startup:
+        periodSeconds: 1
+        failureThreshold: 30
       liveness:
         periodSeconds: 10
         timeoutSeconds: 2

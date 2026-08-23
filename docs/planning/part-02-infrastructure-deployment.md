@@ -69,7 +69,7 @@ The general rule "don't hand-roll infrastructure" is right, and for anything sta
 | 3 | `Dockerfile.mock` + `/health` on `mock_service` (L6) | **Done** |
 | 4 | Helm chart skeleton: `Chart.yaml`, values, namespace + PSA, ServiceAccounts | **Done** |
 | 5 | Workload templates: redis, mock, pokeproxy — probes, resources, securityContext, `checksum/config`, rules via `toJson` (H6, H7) | **Done** |
-| 6 | k3d cluster definition, `k3d image import`, first `helm upgrade --install` | Not started |
+| 6 | k3d cluster definition, `k3d image import`, first `helm upgrade --install` | **Done** |
 | 7 | Sealed Secrets: controller, pinned sealing key, `seal-hmac.sh` | Not started |
 | 8 | Ingress + Traefik body cap (M2) + NetworkPolicy | Not started |
 | 9 | Rollout / termination / measurement pass | Not started |
@@ -197,7 +197,7 @@ New `deploy/helm/pokeproxy/`: `Chart.yaml`, `.helmignore`, `values.yaml`, and `t
 
 `namespace.yaml` names itself `{{ .Release.Namespace }}` rather than inventing a separate `values.namespace` field — the two would only ever need to be identical by convention, so keeping one fewer value removes a way for them to silently disagree. Carries `pod-security.kubernetes.io/{enforce,audit,warn}: restricted`, turning the securityContext work in step 5 into an enforced invariant rather than a claim, as decided in the design phase.
 
-**Not yet verified: first install into a real cluster.** Templating a Namespace resource inside the chart and installing with `-n pokeproxy` but *without* `--create-namespace` is a known-working Helm pattern — Namespace is first in Helm's fixed apply ordering, so it exists before the release's own namespaced resources (including its tracking Secret) need it. Combining `--create-namespace` with an in-chart Namespace resource is a known **anti**-pattern instead: the flag creates the namespace outside release tracking, and the chart's own Namespace manifest then fails with Helm's ownership-metadata conflict. Step 4 has no cluster to confirm this against (that's step 6); recorded here as a design decision to verify then, not asserted as proven now.
+**Corrected in step 6, was wrong here.** This section originally claimed templating a Namespace resource inside the chart and installing with `-n pokeproxy`, *without* `--create-namespace`, was a known-working Helm pattern (Namespace first in Helm's fixed apply order). Tested live against a real cluster in step 6: **it fails outright** — `Error: create: failed to create: namespaces "pokeproxy" not found`. Helm 3.15.4 requires the target namespace to exist before it applies anything, full stop; templating the Namespace inside the chart doesn't help. `--create-namespace` doesn't fix it either — it creates the namespace via a raw, untracked API call, and the chart's own Namespace resource then collides with Helm's ownership-metadata check (`namespaces "pokeproxy" already exists`), exactly the anti-pattern this section already correctly predicted. Net result: **`templates/namespace.yaml` was removed from the chart entirely.** The namespace (with its PSA and ownership labels) is now created declaratively outside Helm's release, via `kubectl create namespace --dry-run=client -o yaml | kubectl label --local -f - ... | kubectl apply -f -`, before `helm upgrade --install` runs. Full detail and the exact failing commands are in the step 6 write-up below.
 
 `serviceaccount.yaml` renders one ServiceAccount per enabled component, each `automountServiceAccountToken: false` at the SA level — the pod-level `securityContext` field is the same decision applied again in step 5, belt-and-suspenders rather than redundant, since either alone is enough to prevent the mount.
 
@@ -206,7 +206,7 @@ Verified by execution:
 | Check | Result |
 |---|---|
 | `helm lint . --strict` | Clean — only an informational "icon is recommended" note |
-| `helm template pokeproxy . --namespace pokeproxy` | Renders 1 Namespace + 3 ServiceAccounts; PSA labels present; consistent `app.kubernetes.io/{name,component,part-of,instance}` on every component resource |
+| `helm template pokeproxy . --namespace pokeproxy` | Renders 1 Namespace + 3 ServiceAccounts; PSA labels present; consistent `app.kubernetes.io/{name,component,part-of,instance}` on every component resource *(the Namespace resource itself was removed in step 6 — see the correction above; this row describes step 4's render at the time, not the chart's current shape)* |
 | `components.mock-downstream.enabled=false` override | Mock's ServiceAccount correctly absent from the render, others unaffected |
 | Different release name (`myrelease`) | Naming holds: `myrelease`, `myrelease-mock-downstream`, `myrelease-redis` — the fullname fix isn't hardcoded to one release name |
 
@@ -264,3 +264,46 @@ Verified by execution:
 | Default `helm template` probe output | Identical to pre-change hardcoded values across all 3 workloads |
 | `--set components.pokeproxy.probes.liveness.periodSeconds=20` | Lands only on pokeproxy's `livenessProbe`, nothing else moved |
 | `--set components.redis.probes.readiness.failureThreshold=9` | Lands only on redis's `readinessProbe`, nothing else moved |
+
+## Step 6 — result
+
+First deployment onto a real cluster. Tooling installed in WSL from each project's own official release channel, pinned rather than "latest": `kubectl` v1.30.5 (from `dl.k8s.io`, matching the Windows client already in use) and `k3d` v5.9.0 (from `k3d-io/k3d`'s GitHub Releases binary). New `deploy/k3d/cluster.yaml` pins `image: rancher/k3s:v1.35.5-k3s1` — k3d's own current default — rather than letting the cluster silently pick up whatever k3d's default becomes later, consistent with every other image pin in this project. Single server node, zero agents: the leanest topology for the measured 7.62 GiB / 8 vCPU Docker Desktop VM budget (confirmed via `docker info` — identical to the WSL `Ubuntu` distro's own figures, since Docker Desktop's WSL2 backend shares that same resource pool, not a separate allocation).
+
+**A real design bug, found by actually running it, not a hypothetical.** Step 4 flagged as "not yet verified" that the chart's own `Namespace` resource plus `helm install -n pokeproxy` (no `--create-namespace`) was a known-working pattern. It isn't, for this Helm version: the very first install failed outright, `Error: create: failed to create: namespaces "pokeproxy" not found` — Helm requires the target namespace to exist before applying anything, regardless of resource-kind ordering. Adding `--create-namespace` doesn't fix it either — that flag creates the namespace via an untracked raw API call, and the chart's own Namespace resource then collides with Helm's ownership-metadata check: `Error: 1 error occurred: * namespaces "pokeproxy" already exists`. Both failure modes reproduced and captured verbatim before touching anything, per "diagnose the actual error before changing code."
+
+**Fix:** removed `templates/namespace.yaml` from the chart entirely. The namespace (with PSA + ownership labels) is now created declaratively *outside* the Helm release:
+```bash
+kubectl create namespace pokeproxy --dry-run=client -o yaml | \
+  kubectl label --local -f - \
+    pod-security.kubernetes.io/enforce=restricted \
+    pod-security.kubernetes.io/audit=restricted \
+    pod-security.kubernetes.io/warn=restricted \
+    app.kubernetes.io/part-of=pokeproxy \
+    app.kubernetes.io/managed-by=Helm \
+    -o yaml | kubectl apply -f -
+```
+`kubectl apply` on a locally-rendered manifest is idempotent and declarative in spirit even though it isn't Helm-tracked — this is exactly what Part 5's bootstrap script will run as a step before `helm upgrade --install`, so nothing here is a one-off hand fix. `helm lint --strict` and `helm template` both stayed clean after the removal.
+
+**A second real bug, also found only by running it.** After the first successful `helm upgrade --install` (redis and mock-downstream healthy, pokeproxy correctly blocked on the not-yet-created HMAC secret — see below), `kubectl describe` on the mock-downstream pod showed: `Killing ... Container mock-downstream failed liveness probe, will be restarted`, plus 16 readiness-probe connection-refused events in the first 70 seconds. Step 5's plan deliberately gave `mock-downstream` and `redis` no `startupProbe`, reasoning "fast native startup, no concern the way pokeproxy's protobuf/pydantic import chain is." That reasoning didn't hold under a real cold start on a freshly-imported image — a `livenessProbe` with the default `initialDelaySeconds: 0` started counting failures before the container had a real chance to bind its port, and killed it once. **Fixed:** added the same `startupProbe` pattern already built for pokeproxy (`probes.startup.{periodSeconds,failureThreshold}` in `values.yaml`) to `mock-downstream` and `redis` too. Re-verified with a fresh `helm upgrade --install --wait --timeout 3m`, which this time succeeded on the first attempt with **zero restarts** across all four pods.
+
+**Temporary HMAC secret — deliberately not committed anywhere.** Step 7 (Sealed Secrets) doesn't exist yet, so `envFrom.secretRef: pokeproxy-hmac` on the pokeproxy container had nothing to reference. Created by hand, once, as a plain `kubectl create secret generic pokeproxy-hmac -n pokeproxy --from-literal=POKEPROXY_HMAC_KEY=<the documented .env.example dev key>` — same name, same key, same value the rest of the project already uses, so step 7 replaces *how* this secret is provisioned without changing what anything downstream expects. Not a script, not a chart feature, not committed — a manual, interactive, session-local bootstrap action, exactly as scoped when the contract was defined in step 5.
+
+Verified by execution:
+
+| Check | Result |
+|---|---|
+| `k3d cluster create` | 87s, single node Ready, all `kube-system` pods (coredns, metrics-server, local-path-provisioner, Traefik) healthy |
+| `k3d image import` | Both `pokeproxy:<sha>` and `mock-downstream:<sha>` imported, 68s |
+| `helm upgrade --install --wait --timeout 3m` (after both fixes) | Succeeds; all 4 pods `1/1 Running`, **0 restarts** |
+| DNS from inside a pokeproxy pod | `pokeproxy-redis.pokeproxy.svc.cluster.local` and `pokeproxy-mock-downstream.pokeproxy.svc.cluster.local` resolve to the exact ClusterIPs `kubectl get svc` reports |
+| Signed request through `kubectl port-forward` → `/stream` | `200 {"status":"received"}` — HMAC verified, Redis cache checked, protobuf decoded, rule matched, forwarded over cluster DNS |
+| Same request confirmed in mock-downstream | `GET /received` shows the exact payload, correct `reason: "strong fire pokemon"` — proves rule matching end-to-end, not just a 200 |
+| Repeat of the identical payload | `200 {"status":"received"}` again (replayed from cache, per M4's design) and `/stats` reports `duplicate_suppressed: 1` — proves Redis GET/SET actually round-trips over the cluster network, not just that the connection didn't error |
+| `kubectl top pods` | Works (metrics-server functional) — idle-state figures only (pokeproxy ~2m CPU/47Mi, redis ~20m/7Mi), **not** the step 9 load measurement, noted here only as a readiness check for that later step |
+| `helm history pokeproxy` | Revision 1 (superseded) and 2 (deployed) both present — the rollback target Part 3 will use already exists as a side effect |
+
+**Repo layout note, minor deviation from the original sketch:** `values-local.yaml` was **not** created this step. Every value it would have held right now (the two image tags) is dynamic per-build, so it's supplied via `--set components.<name>.image.tag=$(git rev-parse --short HEAD)` at deploy time rather than a file that would need editing on every commit. `values-local.yaml` gets created in step 7, when the sealed HMAC ciphertext is the first genuinely static local-only value.
+
+**Not yet verified — explicitly out of step 6's scope:** Traefik/ingress (step 8, not wired to anything yet — it's running idle, harmlessly, as a k3d default), whether `checksum/config` triggers a live rollout on a real `helm upgrade` (step 9), and real load-based resource measurement (step 9). The HMAC secret existing only as a manual `kubectl create secret` — not reproducible from a clean clone yet — is exactly what step 7 closes.
+
+No Python changed. `app/` was used only as a verification client (building signed protobuf requests against the real proto module) — nothing in it was modified.

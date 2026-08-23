@@ -45,6 +45,12 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+          startupProbe:
+            httpGet:
+              path: {{ $spec.probes.liveness.path }}
+              port: http
+            periodSeconds: {{ $spec.probes.startup.periodSeconds }}
+            failureThreshold: {{ $spec.probes.startup.failureThreshold }}
           livenessProbe:
             httpGet:
               path: {{ $spec.probes.liveness.path }}

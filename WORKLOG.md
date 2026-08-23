@@ -6,7 +6,7 @@ This document is the persistent engineering state for the assignment. I update i
 
 ## Current State
 
-**Current phase:** **Part 2 — Infrastructure & Deployment, steps 1–5 of 10 done.** Design agreed and recorded in `docs/planning/part-02-infrastructure-deployment.md`; the Part 2 section below carries decisions and measured results. Branch `feature/infra-and-deployment`. Part 1 is functionally complete (detail retained below).
+**Current phase:** **Part 2 — Infrastructure & Deployment, steps 1–6 of 10 done.** A real k3d cluster is running with the full stack deployed and verified end-to-end (signed request → forward → dedup, all over cluster DNS). Design agreed and recorded in `docs/planning/part-02-infrastructure-deployment.md`; the Part 2 section below carries decisions and measured results. Branch `feature/infra-and-deployment`. Part 1 is functionally complete (detail retained below).
 
 **Part 1 (complete) — both final-audit SHOULD FIX findings closed.** R1 (retry attempt-timeout, `docs/issues/012-retry-attempt-timeout.md`) and D1 (consolidated known-gaps write-up, `docs/issues/000-known-gaps.md`) are fixed. 15 issue IDs now fixed across 12 changes, 13 write-ups, **101 tests** passing from `app/` and the repo root, `ruff` clean. R2, R3, R4 (nice to have, from the same audit) and the pre-existing NICE TO HAVE backlog (L1, L2, L5, M6, H6) remain open, tracked in `docs/issues/000-known-gaps.md`. Part 1 is functionally complete; Part 2 not started.
 
@@ -28,13 +28,14 @@ This document is the persistent engineering state for the assignment. I update i
 - **Wave 5 (M7-CWD) — test suite no longer depends on the invoking shell's working directory.** New `app/tests/conftest.py` pins CWD to `app/` via `pytest_configure()`, computed from the test files' own location. Verified from three different working directories (`app/`, repo root, `/tmp`) — 94/94 every time. Write-up: `docs/issues/011-test-suite-cwd-dependence.md`.
 
 **Currently working on:**
-- Part 2, stopped after step 5 (workload templates) for review before step 6. R2, R3 and the pre-existing NICE TO HAVE items are open and tracked in `docs/issues/000-known-gaps.md`. **H6 and H7's cluster-side half are now fully closed** — see below.
+- Part 2, stopped after step 6 (real cluster deployment) for review before step 7. R2, R3 and the pre-existing NICE TO HAVE items are open and tracked in `docs/issues/000-known-gaps.md`. **H6 and H7's cluster-side half are fully closed and now live-verified**, not just rendered — see below.
+- **Local environment state:** k3d cluster `pokeproxy` is running (1 server node, k3s v1.35.5-k3s1) with the full stack deployed (helm release `pokeproxy`, revision 2) and healthy. `kubectl`/`k3d` now installed in WSL at `~/.local/bin`. The `pokeproxy-hmac` Secret in the cluster right now is a **manually-created placeholder** (not committed, not reproducible from a clean clone) — step 7 replaces it with the real Sealed Secrets flow.
 
 **New standing rule (2026-08-23), added to `CLAUDE.md`:** write self-explanatory code with no comments (SOLID where the code has real structure to benefit — not forced onto trivial code); when a change makes existing code or tests obsolete, remove them as part of that change instead of leaving dead weight, scoped to what the current change touches. Applied immediately in step 3 — see below.
 
 **Repository state:** branch `feature/infra-and-deployment`, based on `395479c`. Untracked as of this entry: `app/Dockerfile`, `app/.dockerignore`, `docs/planning/part-02-infrastructure-deployment.md`. Nothing modified, nothing committed.
 
-**Environment facts measured 2026-08-22/23, not assumed:** Docker Desktop 27.3.1 (was not running at session start — a bootstrap prerequisite that must fail loudly). `kubectl` v1.30.5 on Windows only. WSL Ubuntu 22.04.3, 8 vCPU, **7.6 GiB RAM** — the ceiling Part 4's monitoring stack has to fit under. In WSL: `helm` present, `docker` reaches the daemon (confirmed 27.3.1, context `default`, but only after Docker Desktop finished starting — the first probe hung for ~2 min); **`k3d` and `kubectl` still need installing there.**
+**Environment facts measured 2026-08-22/23, not assumed:** Docker Desktop 27.3.1 (was not running at session start — a bootstrap prerequisite that must fail loudly). `kubectl` v1.30.5 on Windows. Docker Desktop's own VM: **7.62 GiB / 8 vCPU** (confirmed via `docker info` — identical to WSL Ubuntu's own `free -h`/`nproc`, since Docker Desktop's WSL2 backend shares that same resource pool, not a separate allocation) — the ceiling Part 4's monitoring stack has to fit under. In WSL: `helm` present; **`kubectl` v1.30.5 and `k3d` v5.9.0 now installed** at `~/.local/bin` (step 6), pinned from each project's own official release channel (`dl.k8s.io`, `k3d-io/k3d` GitHub Releases) rather than `curl | bash`.
 
 **L3 — deliberately deferred, not missed (decided 2026-08-22).** Error responses (`{"error": "downstream error"}`, etc.) carry no `request_id`, unlike `main.py`'s own `internal_error` handler, which does — inconsistent, and exactly the "useful error messages" gap the assignment names. Root cause and fix were fully scoped in a pre-change review: inject `request.state.request_id` into the content dict at the 6 real error call sites already funneled through `proxy.py`'s `_outcome_response()` helper (built during H4) plus the 2 `JSONResponse` literals in `_forward_request`'s except blocks; `no_rule_matched`'s `{}` body stays untouched since it isn't an error. A related, separately-decidable question was also raised and left open: `rejected_signature_missing` and `rejected_signature_invalid` currently return identical body text (`"invalid signature"`) despite being distinguishable outcomes in the logs.
 
@@ -45,7 +46,7 @@ This document is the persistent engineering state for the assignment. I update i
 **Why M2 deferred rather than fixed:** user's explicit call, consistent with the H5 percentile-removal precedent — this class of protection is also achievable at the ingress/reverse-proxy layer in Part 2 (e.g., an Ingress `client_max_body_size`-equivalent), which is the more standard place production systems put it and rejects before the request even reaches this process. Recorded as a Part 2 addition below (defense-in-depth, not a replacement for the app-level fix, which stays scoped and ready if picked back up first).
 
 **Next:**
-1. Part 2 step 6 — k3d cluster definition, `k3d image import`, first `helm upgrade --install` against a real cluster. This is where step 4's namespace-bootstrap design and step 5's probes/checksum/DNS assumptions get their first live confirmation, pending review of step 5.
+1. Part 2 step 7 — Sealed Secrets: install the controller, pin the sealing key so it survives cluster recreation, `seal-hmac.sh`, replace the manual `pokeproxy-hmac` Secret with a committed SealedSecret. `values-local.yaml` gets created here (first genuinely static local-only value: the encrypted HMAC ciphertext). Pending review of step 6.
 2. Remaining NICE TO HAVE items (L1, L2, L5, R2, R3) stay tracked in `docs/issues/000-known-gaps.md` and don't block Part 2. M2's ingress half closes in step 8.
 
 **R1 — per-attempt HTTP timeout now less than the retry deadline (final audit fix).** `Settings.forward_attempt_timeout_seconds` (`FORWARD_ATTEMPT_TIMEOUT_SECONDS`, default 3.0) replaces the hardcoded `read=10.0`/`write=10.0` in the shared `httpx.AsyncClient`, which previously equalled `FORWARD_DEADLINE_SECONDS` and let one slow attempt consume the whole retry budget. New `Settings.model_validator` rejects `attempt_timeout >= deadline` at startup by name, so the exact bug can't be reintroduced via misconfiguration. `main.py` gained `_build_http_client(settings)` so the client construction is independently testable. Live re-probe against the same black-hole socket used in the audit: **3 of 3 attempts in 9.70s**, was 1 of 3 in 10.17s. New `test_retry_timeout.py` uses a real TCP server (a custom `httpx` transport bypasses timeout enforcement entirely) — surfaced that Python 3.13's `asyncio.Server.wait_closed()` also waits for already-accepted connections' handlers to finish, so the test's hung-server fixture cancels its handler tasks explicitly rather than waiting on them. 7 new tests (94 → 101): 5 in `test_config.py`, 2 in `test_retry_timeout.py`. `ruff check .` clean. Full detail in `docs/issues/012-retry-attempt-timeout.md`.
@@ -345,7 +346,7 @@ Verified by execution:
 
 `namespace.yaml` names itself `{{ .Release.Namespace }}` rather than a separate `values.namespace` field — one fewer value that could silently disagree with the other. Carries `pod-security.kubernetes.io/{enforce,audit,warn}: restricted`, per the design decision to make step 5's securityContext an enforced invariant rather than a claim.
 
-**Not yet verified — flagged rather than assumed:** installing without `--create-namespace` while the chart templates its own Namespace resource is a known-working Helm pattern (Namespace is first in Helm's fixed apply order, so it exists before the release needs it), and combining it *with* `--create-namespace` is a known anti-pattern (ownership-metadata conflict on the un-tracked namespace `--create-namespace` creates). No cluster exists yet to confirm this against live — that's step 6.
+**Corrected in step 6 — this claim was wrong.** Tested live: `helm install -n pokeproxy` without `--create-namespace` fails outright (`namespaces "pokeproxy" not found`) regardless of the chart owning a Namespace resource, and `--create-namespace` collides with that same resource on ownership metadata. `templates/namespace.yaml` was removed from the chart; the namespace + PSA labels are now applied via `kubectl` before `helm upgrade --install` runs. Full detail in the step 6 entry below.
 
 Verified by execution:
 
@@ -391,6 +392,33 @@ Verified by execution:
 No Python changed — chart-only step; `load_rules()` was used as a verification tool, not modified.
 
 **Step 5 follow-up (user review, same day).** Probe timing (`periodSeconds`/`timeoutSeconds`/`failureThreshold`, plus `path` for HTTP probes) moved into `values.yaml` for all three workloads — redis's `exec` command itself stays hardcoded since that's the check's identity, not a tunable. Verified the default render is byte-identical to the prior hardcoded values, then confirmed two independent `--set` overrides each land only on their own resource. Confirmed (not changed) the rules-file path chain: Dockerfile's `POKEPROXY_CONFIG=/etc/pokeproxy/rules.json` → ConfigMap key `rules.json` → whole-directory volume mount at `/etc/pokeproxy`, no `subPath` → exact match, already proven in step 5 via `load_rules()`. Full detail in the planning doc.
+
+**Step 6 (first real cluster) — done 2026-08-23.** Installed `kubectl` v1.30.5 and `k3d` v5.9.0 in WSL, pinned binaries from each project's own official release channel. New `deploy/k3d/cluster.yaml`: 1 server, 0 agents, `image: rancher/k3s:v1.35.5-k3s1` pinned explicitly rather than left floating. Built and imported both images at the current sha, `helm upgrade --install` into the cluster.
+
+**Two real bugs found by actually running it, both fixed — not hypothetical, not deferred:**
+
+1. **The step-4 Namespace design was wrong.** Tested live: `helm install -n pokeproxy` without `--create-namespace` fails outright (`namespaces "pokeproxy" not found`) even though the chart owns a Namespace resource — Helm requires the target namespace to exist before applying anything, contradicting what step 4 assumed about apply ordering. `--create-namespace` doesn't fix it either: it creates the namespace via an untracked raw call, and the chart's own Namespace resource then collides on ownership metadata (`namespaces "pokeproxy" already exists`). Both errors captured verbatim before changing anything. **Fix:** removed `templates/namespace.yaml` from the chart; namespace + PSA/ownership labels now applied via `kubectl create namespace --dry-run=client -o yaml | kubectl label --local -f - ... | kubectl apply -f -` before Helm runs — exactly the sequence Part 5's bootstrap will script.
+2. **`mock-downstream` had no `startupProbe`, and it mattered.** `kubectl describe` showed `Killing ... Container mock-downstream failed liveness probe, will be restarted` on the very first deploy — the default `initialDelaySeconds: 0` let the liveness probe start counting failures before the container had bound its port on a cold, freshly-imported image. Step 5's reasoning ("fast native startup, no concern") didn't hold under a real cold start. **Fix:** added the same `startupProbe` pattern pokeproxy already had to `mock-downstream` and `redis`. Re-verified with `helm upgrade --install --wait --timeout 3m`: succeeded first try, **0 restarts** across all 4 pods.
+
+**Temporary HMAC secret, deliberately not committed:** `kubectl create secret generic pokeproxy-hmac -n pokeproxy --from-literal=POKEPROXY_HMAC_KEY=<the documented dev key>` — manual, session-local, same name/key the chart already expects. Step 7 replaces the provisioning mechanism, not the contract.
+
+Verified by execution:
+
+| Check | Result |
+|---|---|
+| `k3d cluster create` | 87s; node Ready; all `kube-system` pods healthy |
+| `k3d image import` | Both images imported, 68s |
+| `helm upgrade --install --wait --timeout 3m` | Succeeds; **all 4 pods 1/1 Running, 0 restarts** |
+| DNS inside a pokeproxy pod | Both Service FQDNs resolve to their exact ClusterIPs |
+| Signed request via `kubectl port-forward` → `/stream` | `200 {"status":"received"}` |
+| Same request read back from mock-downstream | `GET /received` shows the exact payload + correct `reason` — proves rule matching, not just a 200 |
+| Repeat of the identical payload | `200` again (cache replay) + `/stats` shows `duplicate_suppressed: 1` — proves Redis GET/SET genuinely round-trips over cluster DNS |
+| `kubectl top pods` | Works — metrics-server functional, idle-state numbers only, not step 9's load measurement |
+| `helm history` | Revisions 1 (superseded) + 2 (deployed) — a rollback target already exists |
+
+**Not yet verified, explicitly out of scope here:** Traefik/ingress (step 8; running idle as a k3d default, wired to nothing), `checksum/config` triggering a live rollout (step 9), real load-based resource measurement (step 9). Full detail, including the exact failing commands for both bugs, in `docs/planning/part-02-infrastructure-deployment.md`.
+
+No Python changed — `app/` was used only as a verification client (building real signed protobuf requests), not modified.
 
 ---
 

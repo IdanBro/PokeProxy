@@ -57,6 +57,11 @@ spec:
               mountPath: /data
             - name: tmp
               mountPath: /tmp
+          startupProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: {{ $spec.probes.startup.periodSeconds }}
+            failureThreshold: {{ $spec.probes.startup.failureThreshold }}
           livenessProbe:
             exec:
               command: ["redis-cli", "ping"]
