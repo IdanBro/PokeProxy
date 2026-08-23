@@ -33,7 +33,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: redis
-          image: "{{ $spec.image.repository }}:{{ $spec.image.tag }}"
+          image: "{{ include "pokeproxy.image" $spec.image }}"
           imagePullPolicy: {{ $spec.image.pullPolicy }}
           args:
             - --save

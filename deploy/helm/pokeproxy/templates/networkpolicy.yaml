@@ -128,4 +128,72 @@ spec:
       ports:
         - protocol: TCP
           port: {{ (index .Values.components "mock-downstream").port }}
+{{- if .Values.e2e.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-e2e-egress-to-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pokeproxy.component.labels" (dict "context" $ "component" "e2e") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "pokeproxy.component.selectorLabels" (dict "context" $ "component" "e2e") | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: TCP
+          port: {{ .Values.e2e.traefikContainerPort }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-e2e-egress-to-mock-downstream
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pokeproxy.component.labels" (dict "context" $ "component" "e2e") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "pokeproxy.component.selectorLabels" (dict "context" $ "component" "e2e") | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "pokeproxy.component.selectorLabels" (dict "context" $ "component" "mock-downstream") | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ (index .Values.components "mock-downstream").port }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-mock-downstream-ingress-from-e2e
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pokeproxy.component.labels" (dict "context" $ "component" "mock-downstream") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "pokeproxy.component.selectorLabels" (dict "context" $ "component" "mock-downstream") | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "pokeproxy.component.selectorLabels" (dict "context" $ "component" "e2e") | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ (index .Values.components "mock-downstream").port }}
+{{- end }}
 {{- end }}

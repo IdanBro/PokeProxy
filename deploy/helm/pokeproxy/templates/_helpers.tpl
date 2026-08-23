@@ -30,3 +30,11 @@ app.kubernetes.io/instance: {{ .context.Release.Name }}
 {{ include "pokeproxy.labels" .context }}
 app.kubernetes.io/component: {{ .component }}
 {{- end -}}
+
+{{- define "pokeproxy.image" -}}
+{{- if .digest -}}
+{{ .repository }}@{{ .digest }}
+{{- else -}}
+{{ .repository }}:{{ .tag }}
+{{- end -}}
+{{- end -}}

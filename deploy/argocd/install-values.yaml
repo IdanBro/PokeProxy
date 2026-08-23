@@ -1,0 +1,21 @@
+global:
+  domain: argocd.localhost
+
+configs:
+  params:
+    server.insecure: true
+  cm:
+    timeout.reconciliation: 30s
+
+server:
+  service:
+    type: ClusterIP
+
+dex:
+  enabled: false
+
+notifications:
+  enabled: false
+
+applicationSet:
+  replicas: 0

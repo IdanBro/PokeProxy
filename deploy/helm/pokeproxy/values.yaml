@@ -12,6 +12,21 @@ ingress:
 networkPolicy:
   enabled: true
 
+e2e:
+  enabled: false
+  image:
+    repository: pokeproxy-e2e
+    tag: CHANGEME
+    digest: ""
+    pullPolicy: IfNotPresent
+  proxyUrl: http://traefik.kube-system.svc.cluster.local:80/stream
+  # Traefik Service port 80 maps to its container's "web" entrypoint on 8000.
+  # NetworkPolicy enforcement matches the pod's real listening port, not the
+  # Service port a client dials, so this must track Traefik's actual port.
+  traefikContainerPort: 8000
+  timeoutSeconds: 10
+  retries: 5
+
 components:
   pokeproxy:
     enabled: true
@@ -22,6 +37,7 @@ components:
     image:
       repository: pokeproxy
       tag: CHANGEME
+      digest: ""
       pullPolicy: IfNotPresent
     probes:
       startup:
@@ -68,6 +84,7 @@ components:
     image:
       repository: mock-downstream
       tag: CHANGEME
+      digest: ""
       pullPolicy: IfNotPresent
     probes:
       startup:

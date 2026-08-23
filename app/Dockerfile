@@ -42,7 +42,9 @@ ENV PATH=/opt/pokeproxy/venv/bin:$PATH \
     POKEPROXY_CONFIG=/etc/pokeproxy/rules.json
 
 RUN groupadd --system --gid 10001 pokeproxy \
- && useradd --system --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin pokeproxy
+ && useradd --system --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin pokeproxy \
+ && rm -rf /usr/local/lib/python3.13/site-packages/pip /usr/local/lib/python3.13/site-packages/pip-*.dist-info \
+    /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.13
 
 COPY --from=builder /opt/pokeproxy/venv /opt/pokeproxy/venv
 
