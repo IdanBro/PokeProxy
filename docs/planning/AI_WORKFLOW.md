@@ -462,3 +462,31 @@ Factual conversation-flow notes, appended per workstream. What the session focus
 **Also settled:** WSL bash as the single control shell (Part 5's bootstrap must run on a Linux CI runner); k3d over kind/minikube/Docker Desktop (Docker Desktop's cluster lifecycle is a GUI toggle and fails Part 5 outright); a `__main__.py` config preflight in step 2 to close R4 and M6; single Helm chart with `mockDownstream.enabled: false` in prod values.
 
 **Result:** approved plan at `docs/planning/part-02-infrastructure-deployment.md`, 10 ordered steps. Step 1 (Docker image) implemented and verified by execution — measurements in `WORKLOG.md`, not asserted.
+
+### Session 04 — Part 2 completion audit (2026-08-23)
+
+**Focus:** audit Part 2 against `README_HOME_ASSIGNMENT.md` before starting Part 3. My explicit framing, and the thing that shaped the whole session: *verify the real deployed behavior, not just manifest syntax* — containers build, resources become healthy, services reach each other over cluster networking, config/secrets are correct, probes/resources/security behave as intended. Also explicit: do not start CI/CD, and stop after reporting.
+
+**The instruction changed what the audit actually did.** Reading templates would have produced a plausible, mostly-wrong report. Three of the findings only exist because something was executed:
+
+- The cluster was running images from `95b5887` while HEAD was `721b8fc`, so the first action was rebuilding both images at the HEAD sha and redeploying — otherwise every result below would have described a tree that isn't the one being submitted.
+- **B1** (the sealed HMAC ciphertext only decrypts on this machine) was proven by sealing a value with a foreign 4096-bit key, applying it, and reading the controller's `no key could decrypt secret` back — not by reasoning about `seal-hmac.sh`. The same test showed the controller's active key fingerprint is byte-identical to the gitignored `.secrets/sealing-key.yaml`, which is what makes the conclusion airtight.
+- **S2** (`enableServiceLinks`) was found by dumping the environment inside a running pod and noticing Kubernetes had injected `POKEPROXY_PORT=tcp://10.43.93.39:8000` into every pod in the namespace. pokeproxy works today only because container `envFrom` outranks service links. No amount of chart reading surfaces that.
+
+**What the audit confirmed rather than corrected.** Most of Part 2 held up under execution: ingress-only `/stream` exposure, the 413 body cap, PSA rejecting a privileged pod, NetworkPolicy refusing an unlabeled pod, and Redis-scaled-to-zero leaving pods `Ready` with zero 5xx. The rolling-restart claim was re-run with **all-unique payloads** rather than the load generator's 12 fixed ones, so the 1113/1113 × 200 result exercises the real forward path instead of dedup replays — a strictly stronger version of step 9's measurement.
+
+**One documentation correction:** `WORKLOG.md` recorded 101 tests; the suite is at 106 (the step-2 entrypoint tests were never folded into the count).
+
+**Result:** 2 BLOCKERs (B1, B2), 4 SHOULD FIX (S1–S4), 6 NICE TO HAVE (N1–N6). Both blockers are about reproducing the deployment outside this machine, neither affects the running cluster, and both are prerequisites for Part 3's CD and Part 5's bootstrap. Full evidence in `docs/planning/part-02-infrastructure-deployment.md`; tracked in `WORKLOG.md`'s backlog. No code or chart changed by the audit itself.
+
+### Session 05 — B1/B2 blocker fixes (2026-08-23, same day as the Part 2 audit)
+
+**Focus:** fix the two BLOCKERs from the Part 2 audit before starting Part 3.
+
+**A correction I made to my own recommendation, before writing any code.** When asked which B1 fix I'd recommend, I first said "commit the public cert, seal offline with `kubeseal --cert`." Working through the implementation, I realized that doesn't actually solve the problem on its own: the cert only decrypts things sealed for its matching private key, and that private key is randomly regenerated on every fresh clone by `generate_sealing_key()`. Committing the cert without also pinning the private key just moves the same mismatch one step later. I flagged this to the user rather than silently implementing something that wouldn't fix the bug, and implemented the smaller alternative instead: re-seal unconditionally whenever the script just minted a new key. No key material goes into git either way.
+
+**Verification method for both fixes: reproduce the exact failure, then prove it's gone.** For B1, that meant deleting the local sealing key file and re-running the script against the live cluster — not just reading the new code and reasoning about it. It generated a new key, printed the new re-seal message, produced different ciphertext, and a redeploy against that ciphertext succeeded with the decrypted secret matching the expected dev key byte-for-byte. Also checked idempotency didn't break: a second run with the key unchanged left the file untouched. For B2, applied the new `deploy/k8s/namespace.yaml` against the already-existing namespace (no-op, labels unchanged) and separately against a namespace that had never existed (created correctly with full PSA enforcement) — proving the file works both as a no-op on the current cluster and as the real bootstrap step on a fresh one.
+
+**Cleanup:** both experiments touched live cluster state (a different sealing key, a scratch namespace) — the sealing key and `values-local.yaml` were restored to their original values and the cluster redeployed clean before finishing, so the audit's revision-8 state isn't left divergent by the verification process itself.
+
+**Result:** `scripts/seal-hmac.sh` fixed (3-line change); new `deploy/k8s/namespace.yaml`; write-ups `docs/issues/017-sealed-secret-key-portability.md` and `docs/issues/018-namespace-not-tracked.md`; `WORKLOG.md` and the Part 2 planning doc updated to reflect both as fixed. S1–S4 (should fix) and N1–N6 (nice to have) remain open, unaffected by this session.

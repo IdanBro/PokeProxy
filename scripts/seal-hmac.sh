@@ -49,9 +49,11 @@ generate_sealing_key() {
 
 mkdir -p "$SECRETS_DIR"
 
+key_freshly_generated=false
 if [[ ! -f "$SEALING_KEY_MANIFEST" ]]; then
   echo "Generating sealed-secrets sealing key at $SEALING_KEY_MANIFEST"
   generate_sealing_key
+  key_freshly_generated=true
 else
   echo "Reusing existing sealing key at $SEALING_KEY_MANIFEST"
 fi
@@ -72,8 +74,10 @@ helm upgrade --install sealed-secrets sealed-secrets/sealed-secrets \
 
 kubectl rollout status deployment/"$CONTROLLER_NAME" -n "$CONTROLLER_NAMESPACE" --timeout=90s >/dev/null
 
-if [[ -f "$VALUES_LOCAL" ]] && ! grep -q "encryptedValue: CHANGEME" "$VALUES_LOCAL"; then
-  echo "$VALUES_LOCAL already holds a sealed HMAC value, leaving it as-is"
+if [[ "$key_freshly_generated" == true ]]; then
+  echo "Sealing key was freshly generated — re-sealing $VALUES_LOCAL against it regardless of its current contents"
+elif [[ -f "$VALUES_LOCAL" ]] && ! grep -q "encryptedValue: CHANGEME" "$VALUES_LOCAL"; then
+  echo "$VALUES_LOCAL already holds a value sealed against the existing key, leaving it as-is"
   exit 0
 fi
 

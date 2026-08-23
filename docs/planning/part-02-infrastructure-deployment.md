@@ -454,3 +454,74 @@ Verified by execution:
 | Full app test suite | Not re-run — no Python changed this step |
 
 This closes Part 2. All 10 steps done; `docs/issues/` now covers every fixed issue across both Parts with a write-up, and `docs/issues/000-known-gaps.md` remains the accurate record of what's still open and why.
+
+## Part 2 completion audit — 2026-08-23
+
+Requirement-by-requirement pass against `README_HOME_ASSIGNMENT.md` Part 2, verifying **deployed behavior**, not manifest syntax. No code or chart changed by this audit.
+
+Deployed the committed tree at `721b8fc` end-to-end first, so every result below is against HEAD rather than the older `95b5887` images the cluster happened to be running: both images rebuilt with `--build-arg GIT_SHA=721b8fc` (27.0s / 14.7s), `k3d image import`, `helm upgrade --install --atomic --timeout 3m` → **revision 8, 27.2s, all pods `1/1`, 0 restarts**. Redis's pod was untouched by the upgrade (unchanged template), confirming the step-10 template edits are behavior-neutral for the local path.
+
+### Verified by execution
+
+| Check | Result |
+|---|---|
+| `helm lint` with `values-local.yaml` and `values-prod.yaml` | Clean both (only the `icon is recommended` INFO) |
+| Deploy at HEAD sha | Revision 8 in 27.2s, 4/4 pods ready, **0 restarts** |
+| Signed request via the **real ingress** (`localhost:8080/stream`) | `200 {"status":"received"}` in 22 ms |
+| Repeat of the identical payload | `200` in 8 ms, **not** re-forwarded — `/received` on mock-downstream shows each unique payload exactly once (4 unique posts across 2 runs → 4 records, 0 duplicates) |
+| Cluster DNS + Service routing | Forward target resolved as `http://pokeproxy-mock-downstream.pokeproxy.svc.cluster.local.:8001/pokemon` (read from the live pod's `/stats`); Redis reached at `pokeproxy-redis...:6379` |
+| Redis dedup state | `dbsize` 4, keys `pokeproxy:pokemon:<sha256>`, TTL 237s of 300, `maxmemory 134217728`, `maxmemory-policy allkeys-lru` — all as templated |
+| Caller-supplied `X-Request-ID` | Echoed verbatim (`audit-fixed-id`) through the ingress |
+| Rejections through the ingress | missing sig 401 · bad sig 401 · malformed protobuf 400 |
+| 2 MiB body through the ingress | **413 `Request Entity Too Large`** — the Traefik `Middleware` rejects before the app buffers (M2 ingress half works live) |
+| `/health`, `/ready`, `/stats` via the ingress | **404** each — only `/stream` is exposed |
+| **Redis outage** (`scale redis --replicas=0`) | pokeproxy pods stayed `Ready`, **0 restarts**, signed requests still `200`; 7 × `WARNING cache lookup/write failed`, **zero 5xx** — M1 (Redis never gates readiness) and C4 (degrade, don't fail) both hold in-cluster |
+| **Rolling restart under live load**, all-unique payloads (real forward path, not dedup replays) | 20 rps for 60s across a full `rollout restart`: **1113 sent, 1113 × 200, 0 errors, 0 restarts** |
+| PSA enforcement | A `privileged: true, runAsUser: 0` pod is **rejected**: `violates PodSecurity "restricted:latest"`, naming all six violations |
+| NetworkPolicy | A compliant pod without pokeproxy labels: Redis 6379, mock-downstream 8001 **and** pokeproxy 8000 all refused in under 0.1s; DNS still resolved (the `allow-dns-egress` exception) |
+| Runtime security inside the pod | `uid=10001(pokeproxy) gid=10001`, `/app` read-only (`touch` fails), `/tmp` writable, `automountServiceAccountToken=false`, `terminationGracePeriodSeconds=30`, `preStop sleep 5s` |
+| Config delivery | ConfigMap env correct in-process; `rules.json` mounted read-only at `/etc/pokeproxy` with the templated cluster URLs |
+| Secret delivery | `SealedSecret` `SYNCED=True`, `Secret/pokeproxy-hmac` holds the 36-char base64 key, and valid signatures verify end-to-end — the decrypted value is provably correct |
+| `checksum/config-{env,rules}` independence | A `logLevel` change moves `config-env` only; `config-rules` stays byte-identical. The live Deployment's `config-rules` matches a fresh render exactly |
+| Resource usage at idle (`kubectl top`) | pokeproxy 2–3m / 46Mi (req 250m/128Mi), mock 2m / 35Mi, redis 20m / 3Mi |
+| Image provenance | `org.opencontainers.image.revision=721b8fc` on both images; 248 MB / 236 MB |
+| App suite at HEAD | `pytest -q` **106 passed**, `ruff check .` clean |
+
+### Gaps found
+
+**BLOCKER — B1 (fixed 2026-08-23, same session): the committed sealed ciphertext only decrypted on this machine.** `.secrets/sealing-key.yaml` is gitignored (correct — it holds the RSA private key), and `scripts/seal-hmac.sh:75-78` short-circuits with `already holds a sealed HMAC value, leaving it as-is` whenever `values-local.yaml` is not `CHANGEME`. On a fresh clone the script therefore generates a **new** sealing key (`scripts/seal-hmac.sh:52-57`), installs the controller with it, and leaves ciphertext sealed by the *old* key in place. Proven live rather than argued: sealed a value with a foreign 4096-bit key and applied it as a SealedSecret → `no key could decrypt secret (POKEPROXY_HMAC_KEY)`, and no Secret was created. The controller's only active key fingerprint (`BC:6B:E0:3A:...:4D:22`) is byte-identical to `.secrets/sealing-key.yaml`'s. Downstream effect: pokeproxy pods block on the missing `secretRef` and `helm --atomic` rolls back on timeout without naming the real cause. This is the blind spot in step 6's "recreate the cluster and it still decrypts" verification — that held because the key file survived on disk, which is exactly what a clone does not get. **Fixed:** `scripts/seal-hmac.sh` now tracks whether `generate_sealing_key()` actually ran this invocation and, if so, force-reseals `values-local.yaml` regardless of its existing contents — the "commit the public cert" alternative was considered and rejected, since it only solves the problem if the private key is *also* pinned across machines, which means committing key material. **Re-verified live** by reproducing the exact failure: deleted `.secrets/sealing-key.yaml`, re-ran the script, watched it mint a new key and print "re-sealing ... regardless of its current contents," got a genuinely different ciphertext, redeployed (`helm --atomic` → revision 9, 4/4 pods, 0 restarts), and confirmed the decrypted `Secret` held the correct dev key byte-for-byte. A second run with the key unchanged left the file untouched, confirming idempotency wasn't broken. Original key and ciphertext restored afterward (revision 10, 0 restarts). Full writeup: `docs/issues/017-sealed-secret-key-portability.md`.
+
+**BLOCKER — B2 (fixed 2026-08-23, same session): the namespace and its PSA enforcement existed nowhere in git.** `kubectl get ns pokeproxy` carries `pod-security.kubernetes.io/{enforce,audit,warn}: restricted`, and that enforcement is load-bearing for this document's own definition of done. `templates/namespace.yaml` was correctly removed in step 6, but nothing replaced it: `git grep pod-security` hit only markdown (this file, and `WORKLOG.md`). A clone-and-deploy either failed at `namespaces "pokeproxy" not found` or, with `--create-namespace`, silently landed in an **unenforced** namespace where the PSA rejection verified above would not happen. **Fixed:** committed `deploy/k8s/namespace.yaml` — the exact manifest step 6's hand-run command already produced — applied before Helm. **Re-verified live**: applying it against the already-existing namespace was a no-op (`namespace/pokeproxy configured`, labels byte-identical to before); applying a renamed copy against a namespace that had never existed created it correctly with full PSA enforcement, then was deleted. Full writeup: `docs/issues/018-namespace-not-tracked.md`.
+
+**SHOULD FIX — S1: `components.{pokeproxy,redis}.enabled` are declared and never read.** Identical bug class to the mock-downstream one fixed in `721b8fc`, one component over. `helm template --set components.redis.enabled=false` still renders the Redis Deployment and Service; only `serviceaccount.yaml` gates on `enabled`, so the Deployment references a ServiceAccount that is never created. Verified the failure is hard, not cosmetic: `Error from server (Forbidden): ... error looking up service account pokeproxy/pokeproxy-redis-does-not-exist: serviceaccount ... not found`. Fix: gate the remaining templates, or delete the two `enabled` keys since neither component is genuinely optional.
+
+**SHOULD FIX — S2: `enableServiceLinks` left at its default, and it collides with an app-owned variable.** Kubernetes injects `POKEPROXY_PORT=tcp://10.43.93.39:8000` into every pod in the namespace — confirmed inside the mock-downstream pod, which has no `envFrom` to mask it. pokeproxy survives only because container `envFrom` takes precedence over service links, so its ConfigMap's `POKEPROXY_PORT=8000` wins. Drop that one ConfigMap key and the app parses a URL as an int at startup. Fix: `enableServiceLinks: false` on all three pod specs.
+
+**SHOULD FIX — S3: no runnable deploy procedure anywhere in the repo.** The build → import → namespace → seal → `helm upgrade` sequence exists only as narrative in this file and `WORKLOG.md`; `app/README.md` mentions no `helm`, `kubectl`, `k3d` or `docker build`, and there is no top-level README (deliverable 8). Part 5 owns the one-command entry point, but until it lands a reviewer cannot reproduce Part 2 from the tree.
+
+**SHOULD FIX — S4: `values-prod.yaml` renders rules pointing at the Service it disables.** Already documented honestly in step 10 and in `WORKLOG.md`'s backlog; re-confirmed by rendering — all three rules carry `url: http://pokeproxy-mock-downstream...:8001/pokemon` while `mock-downstream.enabled: false`. Leaving the values empty is the right call; letting it render silently is not. A `fail` in `configmap-rules.yaml` when mock-downstream is disabled and a rule has no explicit `url` converts a runtime 502 into a render-time error, and costs three lines.
+
+**NICE TO HAVE**
+
+| ID | Finding | Evidence |
+|----|---------|----------|
+| N1 | mock-downstream's port is hardcoded in the image (`--port 8001`, `app/Dockerfile.mock:48`) while the chart templates `components.mock-downstream.port` — changing the value points the Service and probes at a port nothing listens on | static |
+| N2 | No PodDisruptionBudget or anti-affinity for pokeproxy. `maxUnavailable: 0` governs rollouts only; a node drain evicts both replicas together. Moot on single-node k3d, real on a multi-node cluster | static |
+| N3 | Redis runs unauthenticated — the NetworkPolicy is the only control (verified working). `requirepass` sourced from the same sealed secret is cheap defense-in-depth | live |
+| N4 | R2 confirmed in-cluster: the Redis-outage probe produced 7 handled `WARNING`s, each followed by a multi-line Python traceback that breaks the one-JSON-object-per-line contract the rest of the stream honors. Costlier now that a cluster collector parses these | live |
+| N5 | Base images pinned by tag, not digest (already flagged in step 1 as Part 3 work) | static |
+| N6 | `preStop.sleep` needs `PodLifecycleSleepAction` (default-on from K8s 1.30). Fine here (v1.35.5); a portability note for any older target cluster `values-prod.yaml` might face | static |
+
+### Assignment requirements — disposition
+
+| Requirement | State |
+|---|---|
+| Containerize the application (Dockerfile) | **Met** — `app/Dockerfile` + `app/Dockerfile.mock`, multi-stage, non-root, read-only rootfs, no dev deps, provenance label |
+| Deploy PokeProxy | **Met** — 2 replicas, healthy, reachable via the ingress |
+| Deploy the mock downstream | **Met** — single replica, `Recreate`, receiving real forwarded traffic |
+| Deploy Redis for the cache | **Met** — templated in-chart, LRU-bounded, dedup verified round-tripping over the network |
+| Accessible and healthy within the cluster | **Met** — verified through the real ingress and via in-cluster DNS, not port-forward |
+| Resource limits | **Met** — requests/limits on all three; requests validated against measured peak (224m vs 250m, step 9) |
+| Health probes | **Met** — startup/liveness/readiness on all three; a Redis outage proven not to gate readiness |
+| Sensible configuration | **Met** — ConfigMap env + rules, `checksum/config-*` proven to roll pods on change; **S2** is the one live footgun |
+| Secrets handled properly | **Partially met** — sealed in git, decrypted correctly in-cluster, never plaintext in a tracked file; **B1** means it only works on this machine |
