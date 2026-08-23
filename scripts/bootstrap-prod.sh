@@ -14,6 +14,8 @@ ARGOCD_CHART_VERSION="10.4.0"
 ARGOCD_VALUES="$REPO_ROOT/deploy/argocd/install-values.yaml"
 ARGOCD_APPLICATION="$REPO_ROOT/deploy/argocd/application.yaml"
 ARGOCD_TARGET_REVISION="${ARGOCD_TARGET_REVISION:-main}"
+CONVERGE_TIMEOUT_SECONDS="${CONVERGE_TIMEOUT_SECONDS:-600}"
+CONVERGE_POLL_SECONDS=5
 
 APP_NAMESPACE="pokeproxy"
 INGRESS_URL="http://localhost:8081/stream"
@@ -72,25 +74,56 @@ echo "==> 5. Application (targetRevision $ARGOCD_TARGET_REVISION)"
 sed "s|targetRevision: main|targetRevision: $ARGOCD_TARGET_REVISION|" "$ARGOCD_APPLICATION" \
   | kubectl --context "$KUBE_CONTEXT" apply -f -
 
-echo "==> 6. Waiting for Argo CD to converge the application"
-for _ in $(seq 1 60); do
-  sync_status="$(kubectl --context "$KUBE_CONTEXT" get application pokeproxy -n "$ARGOCD_NAMESPACE" \
-    -o jsonpath='{.status.sync.status}' 2>/dev/null || true)"
-  health_status="$(kubectl --context "$KUBE_CONTEXT" get application pokeproxy -n "$ARGOCD_NAMESPACE" \
-    -o jsonpath='{.status.health.status}' 2>/dev/null || true)"
-  echo "  sync=${sync_status:-unknown} health=${health_status:-unknown}"
-  if [[ "$sync_status" == "Synced" && "$health_status" == "Healthy" ]]; then
+kubectl --context "$KUBE_CONTEXT" annotate application pokeproxy -n "$ARGOCD_NAMESPACE" \
+  argocd.argoproj.io/refresh=hard --overwrite >/dev/null
+
+application_field() {
+  kubectl --context "$KUBE_CONTEXT" get application pokeproxy -n "$ARGOCD_NAMESPACE" \
+    -o jsonpath="$1" 2>/dev/null || true
+}
+
+application_errors() {
+  kubectl --context "$KUBE_CONTEXT" get application pokeproxy -n "$ARGOCD_NAMESPACE" \
+    -o jsonpath='{range .status.conditions[*]}{.type}: {.message}{"\n"}{end}' 2>/dev/null \
+    | grep -i "error" || true
+}
+
+echo "==> 6. Waiting for Argo CD to converge the application (up to ${CONVERGE_TIMEOUT_SECONDS}s)"
+deadline=$(( SECONDS + CONVERGE_TIMEOUT_SECONDS ))
+last_state=""
+while true; do
+  refresh_pending="$(application_field '{.metadata.annotations.argocd\.argoproj\.io/refresh}')"
+  sync_status="$(application_field '{.status.sync.status}')"
+  health_status="$(application_field '{.status.health.status}')"
+  errors="$(application_errors)"
+
+  if [[ -n "$refresh_pending" ]]; then
+    state="refreshing"
+  else
+    state="sync=${sync_status:-unknown} health=${health_status:-unknown}"
+    [[ -n "$errors" ]] && state="$state (errors present)"
+  fi
+  if [[ "$state" != "$last_state" ]]; then
+    echo "  $state"
+    last_state="$state"
+  fi
+
+  if [[ -z "$refresh_pending" && -z "$errors" \
+        && "$sync_status" == "Synced" && "$health_status" == "Healthy" ]]; then
     break
   fi
-  sleep 10
-done
 
-if [[ "${sync_status:-}" != "Synced" || "${health_status:-}" != "Healthy" ]]; then
-  echo "Argo CD did not reach Synced/Healthy. Current state:" >&2
-  kubectl --context "$KUBE_CONTEXT" get application pokeproxy -n "$ARGOCD_NAMESPACE" -o wide >&2
-  kubectl --context "$KUBE_CONTEXT" get pods -n "$APP_NAMESPACE" >&2
-  exit 1
-fi
+  if (( SECONDS >= deadline )); then
+    echo "Argo CD did not reach Synced/Healthy within ${CONVERGE_TIMEOUT_SECONDS}s. Last state: $state" >&2
+    echo "--- application conditions ---" >&2
+    kubectl --context "$KUBE_CONTEXT" get application pokeproxy -n "$ARGOCD_NAMESPACE" \
+      -o jsonpath='{range .status.conditions[*]}{.type}: {.message}{"\n"}{end}' >&2
+    echo "--- pods ---" >&2
+    kubectl --context "$KUBE_CONTEXT" get pods -n "$APP_NAMESPACE" >&2
+    exit 1
+  fi
+  sleep "$CONVERGE_POLL_SECONDS"
+done
 
 echo "==> 7. Verify"
 kubectl --context "$KUBE_CONTEXT" get pods -n "$APP_NAMESPACE"
