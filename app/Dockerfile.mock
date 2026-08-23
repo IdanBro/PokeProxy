@@ -34,7 +34,9 @@ ENV PATH=/opt/mock-downstream/venv/bin:$PATH \
     PYTHONPATH=/app
 
 RUN groupadd --system --gid 10001 mockdownstream \
- && useradd --system --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin mockdownstream
+ && useradd --system --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin mockdownstream \
+ && rm -rf /usr/local/lib/python3.13/site-packages/pip /usr/local/lib/python3.13/site-packages/pip-*.dist-info \
+    /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.13
 
 COPY --from=builder /opt/mock-downstream/venv /opt/mock-downstream/venv
 
