@@ -225,7 +225,7 @@ docs/
 
 | # | Step | Size | State |
 |---|---|---|---|
-| 1 | CI lint + test (`.github/workflows/ci.yml`), Dependabot, planning doc, WORKLOG | S | Not started |
+| 1 | CI lint + test (`.github/workflows/ci.yml`), Dependabot, planning doc, WORKLOG | S | **Done** — verified live on PR #3, see WORKLOG |
 | 2 | CI build + push to GHCR with SBOM/provenance, Trivy scan, cosign signing | M | Not started |
 | 3 | **E2E: script, derived image, hook Job, 3 NetworkPolicy rules** — proven on the existing dev cluster | **L** | Not started |
 | 4 | Prod stand-in cluster + Argo CD + `deploy/envs/` move (closes S4, N7) | M–L | Not started |
