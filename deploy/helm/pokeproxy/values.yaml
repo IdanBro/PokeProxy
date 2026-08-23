@@ -3,13 +3,100 @@ components:
     enabled: true
     serviceAccount:
       create: true
+    replicaCount: 2
+    port: 8000
+    image:
+      repository: pokeproxy
+      tag: CHANGEME
+      pullPolicy: IfNotPresent
+    probes:
+      startup:
+        periodSeconds: 1
+        failureThreshold: 30
+      liveness:
+        path: /health
+        periodSeconds: 10
+        timeoutSeconds: 2
+        failureThreshold: 3
+      readiness:
+        path: /ready
+        periodSeconds: 5
+        timeoutSeconds: 2
+        failureThreshold: 2
+    resources:
+      requests:
+        cpu: 250m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+    env:
+      logLevel: INFO
+      forwardMaxAttempts: "3"
+      forwardDeadlineSeconds: "10.0"
+      forwardAttemptTimeoutSeconds: "3.0"
+      redisConnectTimeoutSeconds: "2.0"
+      redisSocketTimeoutSeconds: "2.0"
+      cacheTtlSeconds: "300.0"
+    rules:
+      - reason: strong fire pokemon
+        match: ["type_one==Fire", "attack>80", "generation<4"]
+      - reason: legendary pokemon
+        match: ["legendary==true"]
+      - reason: tanky pokemon
+        match: ["defense>100", "hit_points>80"]
 
   mock-downstream:
     enabled: true
     serviceAccount:
       create: true
+    port: 8001
+    image:
+      repository: mock-downstream
+      tag: CHANGEME
+      pullPolicy: IfNotPresent
+    probes:
+      liveness:
+        path: /health
+        periodSeconds: 10
+        timeoutSeconds: 2
+        failureThreshold: 3
+      readiness:
+        path: /health
+        periodSeconds: 5
+        timeoutSeconds: 2
+        failureThreshold: 2
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
 
   redis:
     enabled: true
     serviceAccount:
       create: true
+    port: 6379
+    image:
+      repository: redis
+      tag: 7-alpine
+      pullPolicy: IfNotPresent
+    maxMemoryMb: 128
+    probes:
+      liveness:
+        periodSeconds: 10
+        timeoutSeconds: 2
+        failureThreshold: 3
+      readiness:
+        periodSeconds: 5
+        timeoutSeconds: 2
+        failureThreshold: 2
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 100m
+        memory: 192Mi

@@ -1,0 +1,15 @@
+{{- $spec := .Values.components.redis }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pokeproxy.component.fullname" (dict "context" $ "component" "redis") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pokeproxy.component.labels" (dict "context" $ "component" "redis") | nindent 4 }}
+spec:
+  selector:
+    {{- include "pokeproxy.component.selectorLabels" (dict "context" $ "component" "redis") | nindent 4 }}
+  ports:
+    - name: redis
+      port: {{ $spec.port }}
+      targetPort: redis

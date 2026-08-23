@@ -1,0 +1,68 @@
+{{- $spec := index .Values.components "mock-downstream" -}}
+{{- $fullname := include "pokeproxy.component.fullname" (dict "context" $ "component" "mock-downstream") }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pokeproxy.component.labels" (dict "context" $ "component" "mock-downstream") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "pokeproxy.component.selectorLabels" (dict "context" $ "component" "mock-downstream") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pokeproxy.component.labels" (dict "context" $ "component" "mock-downstream") | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $fullname }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mock-downstream
+          image: "{{ $spec.image.repository }}:{{ $spec.image.tag }}"
+          imagePullPolicy: {{ $spec.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ $spec.port }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml $spec.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            httpGet:
+              path: {{ $spec.probes.liveness.path }}
+              port: http
+            periodSeconds: {{ $spec.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ $spec.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ $spec.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ $spec.probes.readiness.path }}
+              port: http
+            periodSeconds: {{ $spec.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ $spec.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ $spec.probes.readiness.failureThreshold }}
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
+      volumes:
+        - name: tmp
+          emptyDir: {}

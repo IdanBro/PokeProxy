@@ -6,7 +6,7 @@ This document is the persistent engineering state for the assignment. I update i
 
 ## Current State
 
-**Current phase:** **Part 2 — Infrastructure & Deployment, steps 1–4 of 10 done.** Design agreed and recorded in `docs/planning/part-02-infrastructure-deployment.md`; the Part 2 section below carries decisions and measured results. Branch `feature/infra-and-deployment`. Part 1 is functionally complete (detail retained below).
+**Current phase:** **Part 2 — Infrastructure & Deployment, steps 1–5 of 10 done.** Design agreed and recorded in `docs/planning/part-02-infrastructure-deployment.md`; the Part 2 section below carries decisions and measured results. Branch `feature/infra-and-deployment`. Part 1 is functionally complete (detail retained below).
 
 **Part 1 (complete) — both final-audit SHOULD FIX findings closed.** R1 (retry attempt-timeout, `docs/issues/012-retry-attempt-timeout.md`) and D1 (consolidated known-gaps write-up, `docs/issues/000-known-gaps.md`) are fixed. 15 issue IDs now fixed across 12 changes, 13 write-ups, **101 tests** passing from `app/` and the repo root, `ruff` clean. R2, R3, R4 (nice to have, from the same audit) and the pre-existing NICE TO HAVE backlog (L1, L2, L5, M6, H6) remain open, tracked in `docs/issues/000-known-gaps.md`. Part 1 is functionally complete; Part 2 not started.
 
@@ -28,7 +28,7 @@ This document is the persistent engineering state for the assignment. I update i
 - **Wave 5 (M7-CWD) — test suite no longer depends on the invoking shell's working directory.** New `app/tests/conftest.py` pins CWD to `app/` via `pytest_configure()`, computed from the test files' own location. Verified from three different working directories (`app/`, repo root, `/tmp`) — 94/94 every time. Write-up: `docs/issues/011-test-suite-cwd-dependence.md`.
 
 **Currently working on:**
-- Part 2, stopped after step 4 (Helm chart skeleton) for review before step 5. R2, R3 and the pre-existing NICE TO HAVE items are open and tracked in `docs/issues/000-known-gaps.md`.
+- Part 2, stopped after step 5 (workload templates) for review before step 6. R2, R3 and the pre-existing NICE TO HAVE items are open and tracked in `docs/issues/000-known-gaps.md`. **H6 and H7's cluster-side half are now fully closed** — see below.
 
 **New standing rule (2026-08-23), added to `CLAUDE.md`:** write self-explanatory code with no comments (SOLID where the code has real structure to benefit — not forced onto trivial code); when a change makes existing code or tests obsolete, remove them as part of that change instead of leaving dead weight, scoped to what the current change touches. Applied immediately in step 3 — see below.
 
@@ -45,7 +45,7 @@ This document is the persistent engineering state for the assignment. I update i
 **Why M2 deferred rather than fixed:** user's explicit call, consistent with the H5 percentile-removal precedent — this class of protection is also achievable at the ingress/reverse-proxy layer in Part 2 (e.g., an Ingress `client_max_body_size`-equivalent), which is the more standard place production systems put it and rejects before the request even reaches this process. Recorded as a Part 2 addition below (defense-in-depth, not a replacement for the app-level fix, which stays scoped and ready if picked back up first).
 
 **Next:**
-1. Part 2 step 5 — workload templates (redis, mock-downstream, pokeproxy Deployments/Services): probes, resources, securityContext, `checksum/config`, rules rendered via `toJson` (closes the rest of H6, plus H7's cluster-side half), pending review of step 4.
+1. Part 2 step 6 — k3d cluster definition, `k3d image import`, first `helm upgrade --install` against a real cluster. This is where step 4's namespace-bootstrap design and step 5's probes/checksum/DNS assumptions get their first live confirmation, pending review of step 5.
 2. Remaining NICE TO HAVE items (L1, L2, L5, R2, R3) stay tracked in `docs/issues/000-known-gaps.md` and don't block Part 2. M2's ingress half closes in step 8.
 
 **R1 — per-attempt HTTP timeout now less than the retry deadline (final audit fix).** `Settings.forward_attempt_timeout_seconds` (`FORWARD_ATTEMPT_TIMEOUT_SECONDS`, default 3.0) replaces the hardcoded `read=10.0`/`write=10.0` in the shared `httpx.AsyncClient`, which previously equalled `FORWARD_DEADLINE_SECONDS` and let one slow attempt consume the whole retry budget. New `Settings.model_validator` rejects `attempt_timeout >= deadline` at startup by name, so the exact bug can't be reintroduced via misconfiguration. `main.py` gained `_build_http_client(settings)` so the client construction is independently testable. Live re-probe against the same black-hole socket used in the audit: **3 of 3 attempts in 9.70s**, was 1 of 3 in 10.17s. New `test_retry_timeout.py` uses a real TCP server (a custom `httpx` transport bypasses timeout enforcement entirely) — surfaced that Python 3.13's `asyncio.Server.wait_closed()` also waits for already-accepted connections' handlers to finish, so the test's hung-server fixture cancels its handler tasks explicitly rather than waiting on them. 7 new tests (94 → 101): 5 in `test_config.py`, 2 in `test_retry_timeout.py`. `ruff check .` clean. Full detail in `docs/issues/012-retry-attempt-timeout.md`.
@@ -357,6 +357,40 @@ Verified by execution:
 | Different release name (`myrelease`) | Fullname fix holds — not hardcoded to one release name |
 
 No Python touched — chart-only step, test suite not re-run.
+
+**Step 5 (workload templates) — done 2026-08-23.** New Deployment + Service per workload under `templates/{pokeproxy,mock-downstream,redis}/`, plus `pokeproxy-env`/`pokeproxy-rules` ConfigMaps. Closes the rest of **H6** and **H7**'s cluster-side half.
+
+**H6 closed for real, not just relocated.** `values.yaml` rules hold only `reason`/`match`; `configmap-rules.yaml` computes the downstream URL from the mock Service's own naming helper + `.Release.Namespace`, so it can't drift from the Service that actually exists. Verified past "renders": piped the rendered `rules.json` through the real `pokeproxy.rules.load_rules()` — parses into the identical 3 `Rule` objects the local `config/rules.json` produces, URL swapped to `http://pokeproxy-mock-downstream.pokeproxy.svc.cluster.local.:8001/pokemon`.
+
+**Caught a Go-json quirk, not a bug:** Sprig's `toJson` HTML-escapes `<`/`>` as `<`/`>` (a Go `encoding/json` default for HTML embedding, irrelevant here). `json.loads` decodes it identically, so never functional — but `kubectl describe configmap` would have shown garbled escapes on 3 of 4 match conditions. Fixed with `| replace "\\u003c" "<" | replace "\\u003e" ">"`.
+
+**H7 cluster-side closed:** `lifecycle.preStop.sleep.seconds: 5` on every workload — the app-side drain (112ms, Part 1) was already correct; this covers the "endpoint deregistration is async with SIGTERM" gap that was explicitly scoped to Part 2.
+
+**checksum/config-{env,rules} annotations close the H1 consequence** (a rules edit was previously inert until a manual restart). Verified with 3 renders: a rule-content change moves `checksum/config-rules` and leaves `checksum/config-env` untouched; an unrelated redis-only value moves neither.
+
+**Redis uid/gid verified against the real image, not guessed.** `id redis` inside `redis:7-alpine` reports `uid=999(redis) gid=1000(redis)` — group is 1000, not the 999:999 I'd have assumed. Guessing wrong here means a permission-denied crash loop the first time the `emptyDir` needs a write. `fsGroup: 1000` at the pod level (not `runAsGroup` alone) is what makes the volume writable by that GID at mount time. Verified live: `redis:7-alpine --user 999:1000 --read-only` against a volume pre-chowned to `999:1000`, with the chart's exact `--maxmemory 128mb --maxmemory-policy allkeys-lru` args — `PONG`, a real `SET`/`GET`, `maxmemory` reporting exactly 134217728 bytes, `maxmemory-policy` correctly `allkeys-lru`, clean startup log.
+
+**Image tags default to `CHANGEME`, not a plausible-looking fallback.** The design already committed to immutable git-sha tags for the two images this project builds; a fallback like `.Chart.AppVersion` would silently deploy the wrong (or no) image if an operator forgets `--set image.tag=$(git rev-parse --short HEAD)`. `CHANGEME` fails loud (`ErrImagePull` naming an unmistakable tag) instead of quietly wrong. Redis keeps a real default (`7-alpine`) — it's a pinned upstream version, nothing to forget.
+
+**Contract for step 7:** `envFrom.secretRef.name: pokeproxy-hmac` on the pokeproxy container, namespace `pokeproxy`, one data key literally `POKEPROXY_HMAC_KEY`. Not `optional: true` — a missing Secret should leave pods in `CreateContainerConfigError`, the intended fail-fast.
+
+Verified by execution:
+
+| Check | Result |
+|---|---|
+| `helm lint . --strict` | Clean |
+| `helm template` (fake tags via `--set`) | 12 resources, zero errors |
+| Rendered `rules.json` → real `load_rules()` | Parses correctly, URL correctly cluster-internal |
+| `checksum/config-{env,rules}` isolation | Confirmed via 3 comparative renders |
+| Service selectors vs. Deployment pod labels | Cross-checked programmatically — every Service matches exactly one Deployment |
+| `serviceAccountName` on every Deployment | Resolves to an SA the chart actually renders |
+| Redis uid 999/gid 1000 + `fsGroup` | Live container round-trip, see above |
+
+**Not yet verified — needs a real cluster (step 6):** probes passing against live pods, `checksum/config` actually triggering a rollout on a live `helm upgrade`, and pokeproxy→redis / pokeproxy→mock-downstream cluster-DNS resolution.
+
+No Python changed — chart-only step; `load_rules()` was used as a verification tool, not modified.
+
+**Step 5 follow-up (user review, same day).** Probe timing (`periodSeconds`/`timeoutSeconds`/`failureThreshold`, plus `path` for HTTP probes) moved into `values.yaml` for all three workloads — redis's `exec` command itself stays hardcoded since that's the check's identity, not a tunable. Verified the default render is byte-identical to the prior hardcoded values, then confirmed two independent `--set` overrides each land only on their own resource. Confirmed (not changed) the rules-file path chain: Dockerfile's `POKEPROXY_CONFIG=/etc/pokeproxy/rules.json` → ConfigMap key `rules.json` → whole-directory volume mount at `/etc/pokeproxy`, no `subPath` → exact match, already proven in step 5 via `load_rules()`. Full detail in the planning doc.
 
 ---
 

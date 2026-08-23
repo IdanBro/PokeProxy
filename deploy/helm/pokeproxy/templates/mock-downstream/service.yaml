@@ -1,0 +1,15 @@
+{{- $spec := index .Values.components "mock-downstream" }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pokeproxy.component.fullname" (dict "context" $ "component" "mock-downstream") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pokeproxy.component.labels" (dict "context" $ "component" "mock-downstream") | nindent 4 }}
+spec:
+  selector:
+    {{- include "pokeproxy.component.selectorLabels" (dict "context" $ "component" "mock-downstream") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $spec.port }}
+      targetPort: http

@@ -68,7 +68,7 @@ The general rule "don't hand-roll infrastructure" is right, and for anything sta
 | 2 | `src/pokeproxy/__main__.py` config preflight (R4 + M6) | **Done** |
 | 3 | `Dockerfile.mock` + `/health` on `mock_service` (L6) | **Done** |
 | 4 | Helm chart skeleton: `Chart.yaml`, values, namespace + PSA, ServiceAccounts | **Done** |
-| 5 | Workload templates: redis, mock, pokeproxy — probes, resources, securityContext, `checksum/config`, rules via `toJson` (H6, H7) | Not started |
+| 5 | Workload templates: redis, mock, pokeproxy — probes, resources, securityContext, `checksum/config`, rules via `toJson` (H6, H7) | **Done** |
 | 6 | k3d cluster definition, `k3d image import`, first `helm upgrade --install` | Not started |
 | 7 | Sealed Secrets: controller, pinned sealing key, `seal-hmac.sh` | Not started |
 | 8 | Ingress + Traefik body cap (M2) + NetworkPolicy | Not started |
@@ -211,3 +211,56 @@ Verified by execution:
 | Different release name (`myrelease`) | Naming holds: `myrelease`, `myrelease-mock-downstream`, `myrelease-redis` — the fullname fix isn't hardcoded to one release name |
 
 No Python touched — chart-only step, so the test suite wasn't re-run.
+
+## Step 5 — result
+
+Twelve resources across `templates/{pokeproxy,mock-downstream,redis}/`: a Deployment + Service per workload, plus `pokeproxy-env`/`pokeproxy-rules` ConfigMaps. This is where the rest of H6 actually closes and where H7's cluster-side half lands.
+
+**Rules become genuinely cluster-internal, not just relocated.** `values.yaml`'s `components.pokeproxy.rules` holds only `reason` + `match` per rule — no `url`. `configmap-rules.yaml` computes the downstream URL once, from the mock Service's own naming helper and `.Release.Namespace`, and merges it into each rule before `toJson`. The URL can't drift from the Service that actually exists because it's derived from the same helper that names the Service, not typed twice. Verified beyond "renders plausible YAML": piped the rendered `rules.json` through the real `pokeproxy.rules.load_rules()` and confirmed it parses into the identical three `Rule` objects the local `config/rules.json` produces, with the URL swapped to `http://pokeproxy-mock-downstream.pokeproxy.svc.cluster.local.:8001/pokemon`.
+
+**A Go-json quirk worth knowing about, not a bug:** Sprig's `toJson` HTML-escapes `<`/`>` (`\u003c`/`\u003e`) — a Go `encoding/json` default aimed at safely embedding JSON in HTML, irrelevant here. `json.loads` decodes it back identically, so it was never a functional problem, but `kubectl describe configmap` would have shown garbled escapes for every `>`/`<` in `rules.json` (three of the four match conditions use one). Piped through `replace "\u003c" "<" | replace "\u003e" ">"` — the double-escaped `\u003c` in the template source is deliberate: Go's own string-literal parser would otherwise decode `"\u003c"` back into a literal `<` before the template even runs, matching nothing in the actual rendered text.
+
+**`checksum/config-{env,rules}` pod-template annotations close the H1 consequence** (a rules ConfigMap edit was previously silently inert until a manual restart). Verified with three renders: changing a rule's match condition changes `checksum/config-rules` and leaves `checksum/config-env` untouched; changing an unrelated redis-only value leaves both pokeproxy checksums untouched. Since the checksum lives in `spec.template.metadata.annotations`, a changed value changes the pod template hash, which is exactly what makes a Deployment roll on `helm upgrade` — this is the standard checksum-annotation pattern, not a custom mechanism.
+
+**`lifecycle.preStop.sleep.seconds: 5` on every workload closes H7's cluster-side half** — the app-side drain (Part 1, 112ms measured) was already correct; this is the "endpoint deregistration is async with SIGTERM" gap the planning doc flagged as cluster-side scope.
+
+**Redis runs as uid 999 / gid 1000, not a guessed 999:999.** Checked the real `redis:7-alpine` image before writing the securityContext: `id redis` inside the image reports `uid=999(redis) gid=1000(redis)`, and `/data` is baked in owned by `redis:redis` (999:1000) — the group is 1000, not 999. Guessing 999:999 here would have produced a permission-denied crash loop against a real `emptyDir` the first time it needed to write. `fsGroup: 1000` at the pod level is what actually makes the `emptyDir` writable by that GID at mount time — `runAsUser`/`runAsGroup` alone control who the process runs as, not who owns the volume. Verified beyond reading the image metadata: ran `redis:7-alpine` in Docker as `--user 999:1000 --read-only` against a volume pre-chowned to `999:1000`, with the exact args the chart uses — `PONG`, a real `SET`/`GET` round-trip, `maxmemory` reporting exactly 134217728 bytes (128MB), `maxmemory-policy` reporting `allkeys-lru`, and a clean startup log with no permission errors.
+
+**Image tags default to `CHANGEME`, deliberately, not a fallback like `.Chart.AppVersion`.** The design already committed to immutable git-sha tags (`pokeproxy:<sha>`) for the two images this project builds — a plausible-looking fallback (chart version, `latest`) would silently deploy the wrong thing, or nothing, if an operator forgets `--set image.tag=$(git rev-parse --short HEAD)`. `CHANGEME` fails in an immediately legible way (`ErrImagePull` naming a tag nobody could mistake for real) rather than a quiet wrong-version deploy. `redis`'s tag is a real, meaningful default (`7-alpine`) — it's a pinned upstream version, not a locally-built artifact, so there's nothing to forget.
+
+**The HMAC secret contract for step 7:** `envFrom.secretRef.name: pokeproxy-hmac` on the pokeproxy container. Step 7's SealedSecret must decrypt into a plain `Secret` in the `pokeproxy` namespace named exactly `pokeproxy-hmac`, with one data key literally `POKEPROXY_HMAC_KEY` (uppercase — `envFrom` injects each Secret data key verbatim as the env var name). Not marking it `optional: true`: a missing Secret should leave pods in `CreateContainerConfigError`, which is the intended fail-fast, not a silently-started proxy with no HMAC key.
+
+Verified by execution:
+
+| Check | Result |
+|---|---|
+| `helm lint . --strict` | Clean |
+| `helm template` (fake image tags via `--set`) | Renders 12 resources, zero errors |
+| Rendered `rules.json` → `pokeproxy.rules.load_rules()` | Parses into the same 3 rules as local `config/rules.json`, URL correctly swapped to the cluster-internal mock Service |
+| `checksum/config-{env,rules}` reacts only to its own ConfigMap's content | Confirmed with 3 renders (baseline / rule changed / unrelated redis value changed) |
+| Service `spec.selector` vs. each Deployment's pod-template labels | Cross-checked programmatically — every Service matches exactly one Deployment, no over- or under-match |
+| `serviceAccountName` on every Deployment | Resolves to a ServiceAccount actually rendered by the chart |
+| Redis uid 999 / gid 1000, `--read-only`, `fsGroup`-writable `emptyDir` | Live container: `PONG`, `SET`/`GET` round-trip, correct `maxmemory`/`maxmemory-policy`, clean startup log |
+
+**Not yet verified — genuinely needs a cluster:** whether the HTTP/exec probes pass against real running pods, whether the checksum annotation actually triggers a rollout on a live `helm upgrade` (only the rendered-value mechanics are confirmed here), and the pokeproxy→redis / pokeproxy→mock-downstream cluster-DNS resolution the ConfigMap's URLs assume. All three are step 6.
+
+No Python changed — chart-only step, aside from using the app's own `load_rules()` as a verification tool (not modifying it).
+
+## Step 5 follow-up (user review)
+
+Three review comments, addressed in place rather than as a new numbered step:
+
+1. **Probe properties made configurable via `.Values`, all three workloads.** Each component's `values.yaml` now carries a `probes` block (`startup` for pokeproxy only, `liveness`/`readiness` for all three — `path` where the probe is HTTP, `periodSeconds`/`timeoutSeconds`/`failureThreshold` everywhere). Redis's `exec: ["redis-cli", "ping"]` command itself stays hardcoded — that's the check's identity, not a tunable knob; only its timing is parameterized, consistent with what "properties" meant for the other two. Verified the default render is byte-identical to the previous hardcoded values (no behavioral drift from this refactor), then confirmed two independent overrides (`components.pokeproxy.probes.liveness.periodSeconds=20`, `components.redis.probes.readiness.failureThreshold=9`) land in exactly their own resource and nowhere else.
+
+2. **Why `mock-downstream` is `Recreate`, not `RollingUpdate`:** `mock_service/main.py:9` keeps `received_pokemon` as a plain in-process Python list — no Redis, no shared store. Under `RollingUpdate`, two pods briefly coexist behind one Service, each with its own independent list; a `POST /pokemon` landing on pod A followed by `GET /received` landing on pod B would see an empty list. `Recreate` guarantees exactly one pod (and one list) exists at any moment. This is also the reason Part 3's post-deploy E2E check (post through the proxy, then read `/received`) is only deterministic against a single-replica mock.
+
+3. **Rules file path, re-verified on request, not changed:** Dockerfile's `POKEPROXY_CONFIG=/etc/pokeproxy/rules.json` → ConfigMap key `rules.json` → volume `rules` (no `items:` override, so every key mounts) → volumeMount at directory `/etc/pokeproxy` (no `subPath`) → resulting in-container file `/etc/pokeproxy/rules.json`. Exact match, already proven functionally in step 5 by piping the rendered content through the app's real `load_rules()`. Nothing changed here.
+
+Verified by execution:
+
+| Check | Result |
+|---|---|
+| `helm lint . --strict` | Clean |
+| Default `helm template` probe output | Identical to pre-change hardcoded values across all 3 workloads |
+| `--set components.pokeproxy.probes.liveness.periodSeconds=20` | Lands only on pokeproxy's `livenessProbe`, nothing else moved |
+| `--set components.redis.probes.readiness.failureThreshold=9` | Lands only on redis's `readinessProbe`, nothing else moved |
