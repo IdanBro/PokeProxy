@@ -210,6 +210,8 @@ docs/
 | Check | Result | Consequence |
 |---|---|---|
 | Traefik Service | `traefik.kube-system`, `80:32637/TCP`, ClusterIP `10.43.137.229` | the E2E Job's in-cluster URL is `http://traefik.kube-system.svc.cluster.local:80/stream` |
+| Traefik's Service port 80 vs its container port | Service `web` port 80 maps to a **named** targetPort `web` = container port **8000** — found by debugging a NetworkPolicy that refused connections despite a syntactically correct rule | this cluster's NetworkPolicy enforcement matches the destination pod's real listening port, not the Service port a client dials; `egress.ports` in a cross-namespace rule must reference 8000, not 80. Exposed as `e2e.traefikContainerPort` in values.yaml so it doesn't drift silently if Traefik's chart changes it |
+| This cluster's NetworkPolicy deny behavior | A denied destination gives immediate `ECONNREFUSED`, not a timeout — confirmed by isolating a debug pod outside all policies (worked) vs. inside (refused instantly) | corrects step 3's verification table, which originally assumed a timeout |
 | `main` branch protection | none at design time — being enabled (D11) | the promote job will need a documented bot bypass |
 | Docker server arch | `amd64` | build `linux/amd64` only |
 | `app/.python-version` | `3.13` | uv resolves it from the file; no version input in the workflow |
@@ -227,7 +229,7 @@ docs/
 |---|---|---|---|
 | 1 | CI lint + test (`.github/workflows/ci.yml`), Dependabot, planning doc, WORKLOG | S | **Done** — verified live on PR #3, see WORKLOG |
 | 2 | CI build + push to GHCR with SBOM/provenance, Trivy scan, cosign signing | M | **Done** — verified live on PR #3, see WORKLOG |
-| 3 | **E2E: script, derived image, hook Job, 3 NetworkPolicy rules** — proven on the existing dev cluster | **L** | Not started |
+| 3 | **E2E: script, derived image, hook Job, 3 NetworkPolicy rules** — proven on the existing dev cluster | **L** | **Done** — verified live, see WORKLOG |
 | 4 | Prod stand-in cluster + Argo CD + `deploy/envs/` move (closes S4, N7) | M–L | Not started |
 | 5 | CI promote job with the production Environment; measure commit to serving | S–M | Not started |
 | 6 | `rollback.yml` plus all three failure scenarios executed | M | Not started |
@@ -302,7 +304,7 @@ Known difference from a real client, worth stating: an in-cluster request to Tra
 | `deploy.sh` with e2e on | hook Job runs, four assertions pass, logs captured |
 | run twice back to back | passes both times — proves the dedup handling is real |
 | point the e2e at a wrong mock URL | Job fails, `helm upgrade --atomic` auto-rolls-back; `helm history` captured |
-| delete one of the three NetworkPolicy rules | Job fails on connection timeout — the same A/B rigour as Part 2 step 8; proves the rules are load-bearing |
+| delete one of the three NetworkPolicy rules | Job fails on **connection refused** (not a timeout — this cluster's NetworkPolicy controller actively rejects rather than silently dropping, corrected from this plan's original assumption) — the same A/B rigour as Part 2 step 8; proves the rules are load-bearing |
 | `/received` length | grows by exactly 1 per passing run |
 
 `helm lint --strict` and `helm template | kubeconform -strict` join CI in this step. kubeconform needs `-ignore-missing-schemas` or an explicit schema location for the `SealedSecret` CRD; the chart is linted against the same values files Argo CD uses, so CI validates what actually deploys rather than something adjacent to it.

@@ -56,7 +56,8 @@ GIT_SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD)"
 echo "Building at sha $GIT_SHA"
 docker build --build-arg GIT_SHA="$GIT_SHA" -t "pokeproxy:$GIT_SHA" -f "$APP_DIR/Dockerfile" "$APP_DIR"
 docker build --build-arg GIT_SHA="$GIT_SHA" -t "mock-downstream:$GIT_SHA" -f "$APP_DIR/Dockerfile.mock" "$APP_DIR"
-k3d image import "pokeproxy:$GIT_SHA" "mock-downstream:$GIT_SHA" -c "$CLUSTER_NAME"
+docker build --build-arg BASE_IMAGE="pokeproxy:$GIT_SHA" -t "pokeproxy-e2e:$GIT_SHA" -f "$APP_DIR/Dockerfile.e2e" "$APP_DIR"
+k3d image import "pokeproxy:$GIT_SHA" "mock-downstream:$GIT_SHA" "pokeproxy-e2e:$GIT_SHA" -c "$CLUSTER_NAME"
 
 echo "==> 3. Namespace"
 kubectl --context "$KUBE_CONTEXT" apply -f "$NAMESPACE_MANIFEST"
@@ -71,6 +72,8 @@ helm upgrade --install "$RELEASE_NAME" "$CHART_DIR" \
   -f "$VALUES_LOCAL" \
   --set components.pokeproxy.image.tag="$GIT_SHA" \
   --set components.mock-downstream.image.tag="$GIT_SHA" \
+  --set e2e.enabled=true \
+  --set e2e.image.tag="$GIT_SHA" \
   --atomic --timeout 3m
 
 echo "==> 6. Verify"

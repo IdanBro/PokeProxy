@@ -1,0 +1,53 @@
+{{- if .Values.e2e.enabled }}
+{{- $fullname := include "pokeproxy.component.fullname" (dict "context" $ "component" "e2e") }}
+{{- $pokeproxyFullname := include "pokeproxy.component.fullname" (dict "context" $ "component" "pokeproxy") }}
+{{- $mockFullname := include "pokeproxy.component.fullname" (dict "context" $ "component" "mock-downstream") }}
+{{- $mockPort := (index .Values.components "mock-downstream").port }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pokeproxy.component.labels" (dict "context" $ "component" "e2e") | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 120
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        {{- include "pokeproxy.component.labels" (dict "context" $ "component" "e2e") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: e2e
+          image: "{{ .Values.e2e.image.repository }}:{{ .Values.e2e.image.tag }}"
+          imagePullPolicy: {{ .Values.e2e.image.pullPolicy }}
+          args:
+            - --proxy-url={{ .Values.e2e.proxyUrl }}
+            - --mock-url=http://{{ $mockFullname }}:{{ $mockPort }}
+            - --timeout={{ .Values.e2e.timeoutSeconds }}
+            - --retries={{ .Values.e2e.retries }}
+          envFrom:
+            - secretRef:
+                name: {{ $pokeproxyFullname }}-hmac
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+{{- end }}
