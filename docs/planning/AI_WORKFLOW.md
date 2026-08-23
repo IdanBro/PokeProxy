@@ -438,3 +438,113 @@ Tell me:
 
 Do not modify anything yet. Stop after reconstructing the state.
 ```
+
+---
+
+## Session Notes
+
+Factual conversation-flow notes, appended per workstream. What the session focused on, corrections I made, and which decisions resulted. Not transcripts.
+
+### Session 03 — Part 2 design + step 1 (2026-08-23)
+
+**Focus:** design the whole of Part 2 before writing anything, then implement only the first step.
+
+**Corrections I made to the proposed design — three, all deliberate:**
+
+1. **Kustomize → Helm.** Claude recommended Kustomize for our workloads and Helm only for upstream charts, arguing `configMapGenerator`'s content-hash naming solves the H1 rules-restart problem for free and that `kustomize edit set image` is the natural GitOps primitive. I overruled it: I don't want two packaging approaches across local and production. Claude accepted, mapped every mechanism to its Helm equivalent (`checksum/config` annotation, values-file image bump), and pointed out that `helm upgrade --atomic` plus `helm rollback` revision history is a real gain back for Part 3's rollback story.
+
+2. **CPU limits.** Claude proposed requests-only with no CPU limits, on the grounds that CFS throttling costs tail latency on a proxy and that would poison Part 4's alert thresholds. I asked for limits at 2× requests. Accepted, with the caveat that the *requests* have to come from `kubectl top` measurement in step 9 rather than a guess — the provisional 250m for pokeproxy was raised from an earlier 100m specifically because a 200m ceiling would throttle under load.
+
+3. **Redis via a Helm chart.** I asked for the Bitnami chart and invited pushback. Claude pushed back with evidence: the August 2025 Bitnami catalog change moved versioned images to `docker.io/bitnamilegacy/*` (archived, unpatched) and stopped OCI chart publishing, and even `architecture: standalone` brings a StatefulSet, PVC, auth Secret and sentinel/metrics templates we'd disable. It also noted a third-party subchart is itself a second templating approach, which cuts against my own consistency argument for #1. I took the recommendation: Redis is templated in our chart on the official image.
+
+**A correction Claude made to me:** I proposed installing the kubeseal controller at cluster creation so decryption would be "the same process every time." That doesn't work on its own — the controller mints a fresh keypair whenever it finds no Secret labeled `sealedsecrets.bitnami.com/sealed-secrets-key: active`, so every recreated k3d cluster would break a committed SealedSecret. The fix is to pin the sealing key: generate it into a gitignored `.secrets/`, apply it *before* the controller starts, install with `keyrenewperiod=0`.
+
+**Also settled:** WSL bash as the single control shell (Part 5's bootstrap must run on a Linux CI runner); k3d over kind/minikube/Docker Desktop (Docker Desktop's cluster lifecycle is a GUI toggle and fails Part 5 outright); a `__main__.py` config preflight in step 2 to close R4 and M6; single Helm chart with `mockDownstream.enabled: false` in prod values.
+
+**Result:** approved plan at `docs/planning/part-02-infrastructure-deployment.md`, 10 ordered steps. Step 1 (Docker image) implemented and verified by execution — measurements in `WORKLOG.md`, not asserted.
+
+### Session 04 — Part 2 completion audit (2026-08-23)
+
+**Focus:** audit Part 2 against `README_HOME_ASSIGNMENT.md` before starting Part 3. My explicit framing, and the thing that shaped the whole session: *verify the real deployed behavior, not just manifest syntax* — containers build, resources become healthy, services reach each other over cluster networking, config/secrets are correct, probes/resources/security behave as intended. Also explicit: do not start CI/CD, and stop after reporting.
+
+**The instruction changed what the audit actually did.** Reading templates would have produced a plausible, mostly-wrong report. Three of the findings only exist because something was executed:
+
+- The cluster was running images from `95b5887` while HEAD was `721b8fc`, so the first action was rebuilding both images at the HEAD sha and redeploying — otherwise every result below would have described a tree that isn't the one being submitted.
+- **B1** (the sealed HMAC ciphertext only decrypts on this machine) was proven by sealing a value with a foreign 4096-bit key, applying it, and reading the controller's `no key could decrypt secret` back — not by reasoning about `seal-hmac.sh`. The same test showed the controller's active key fingerprint is byte-identical to the gitignored `.secrets/sealing-key.yaml`, which is what makes the conclusion airtight.
+- **S2** (`enableServiceLinks`) was found by dumping the environment inside a running pod and noticing Kubernetes had injected `POKEPROXY_PORT=tcp://10.43.93.39:8000` into every pod in the namespace. pokeproxy works today only because container `envFrom` outranks service links. No amount of chart reading surfaces that.
+
+**What the audit confirmed rather than corrected.** Most of Part 2 held up under execution: ingress-only `/stream` exposure, the 413 body cap, PSA rejecting a privileged pod, NetworkPolicy refusing an unlabeled pod, and Redis-scaled-to-zero leaving pods `Ready` with zero 5xx. The rolling-restart claim was re-run with **all-unique payloads** rather than the load generator's 12 fixed ones, so the 1113/1113 × 200 result exercises the real forward path instead of dedup replays — a strictly stronger version of step 9's measurement.
+
+**One documentation correction:** `WORKLOG.md` recorded 101 tests; the suite is at 106 (the step-2 entrypoint tests were never folded into the count).
+
+**Result:** 2 BLOCKERs (B1, B2), 4 SHOULD FIX (S1–S4), 6 NICE TO HAVE (N1–N6). Both blockers are about reproducing the deployment outside this machine, neither affects the running cluster, and both are prerequisites for Part 3's CD and Part 5's bootstrap. Full evidence in `docs/planning/part-02-infrastructure-deployment.md`; tracked in `WORKLOG.md`'s backlog. No code or chart changed by the audit itself.
+
+### Session 05 — B1/B2 blocker fixes (2026-08-23, same day as the Part 2 audit)
+
+**Focus:** fix the two BLOCKERs from the Part 2 audit before starting Part 3.
+
+**A correction I made to my own recommendation, before writing any code.** When asked which B1 fix I'd recommend, I first said "commit the public cert, seal offline with `kubeseal --cert`." Working through the implementation, I realized that doesn't actually solve the problem on its own: the cert only decrypts things sealed for its matching private key, and that private key is randomly regenerated on every fresh clone by `generate_sealing_key()`. Committing the cert without also pinning the private key just moves the same mismatch one step later. I flagged this to the user rather than silently implementing something that wouldn't fix the bug, and implemented the smaller alternative instead: re-seal unconditionally whenever the script just minted a new key. No key material goes into git either way.
+
+**Verification method for both fixes: reproduce the exact failure, then prove it's gone.** For B1, that meant deleting the local sealing key file and re-running the script against the live cluster — not just reading the new code and reasoning about it. It generated a new key, printed the new re-seal message, produced different ciphertext, and a redeploy against that ciphertext succeeded with the decrypted secret matching the expected dev key byte-for-byte. Also checked idempotency didn't break: a second run with the key unchanged left the file untouched. For B2, applied the new `deploy/k8s/namespace.yaml` against the already-existing namespace (no-op, labels unchanged) and separately against a namespace that had never existed (created correctly with full PSA enforcement) — proving the file works both as a no-op on the current cluster and as the real bootstrap step on a fresh one.
+
+**Cleanup:** both experiments touched live cluster state (a different sealing key, a scratch namespace) — the sealing key and `values-local.yaml` were restored to their original values and the cluster redeployed clean before finishing, so the audit's revision-8 state isn't left divergent by the verification process itself.
+
+**Result:** `scripts/seal-hmac.sh` fixed (3-line change); new `deploy/k8s/namespace.yaml`; write-ups `docs/issues/017-sealed-secret-key-portability.md` and `docs/issues/018-namespace-not-tracked.md`; `WORKLOG.md` and the Part 2 planning doc updated to reflect both as fixed. S1–S4 (should fix) and N1–N6 (nice to have) remain open, unaffected by this session.
+
+### Session 06 — S1/S2/S3 fixes (2026-08-23, same day as the audit and B1/B2 fixes)
+
+**Focus:** fix the three remaining SHOULD FIX chart-hygiene items from the Part 2 audit.
+
+**S1 decision:** the write-up left two options open — gate the templates, or delete the unused `enabled` keys. Deleting them was tempting (pokeproxy and redis aren't really meant to be toggled off), but the `enabled` field is read generically by `serviceaccount.yaml`'s `range` loop over every component — deleting the key would silently break ServiceAccount creation via Helm's nil-is-falsy behavior. Gating the Deployment/Service templates, matching the pattern already fixed for mock-downstream in `721b8fc`, was the correct minimal fix: same bug class, same shape of fix, no ripple into unrelated templates.
+
+**S2 was applied to all three components, not just the one that broke.** The audit only proved the failure on mock-downstream (it has no `envFrom` to mask the injected var), but pokeproxy and redis have the identical exposure — pokeproxy is saved today only by env-precedence luck. Fixed all three rather than just the one caught failing.
+
+**Verification, same standard as the B1/B2 session: reproduce, fix, re-verify live, not just re-read the template.** For S1, rendered the chart with `--set components.redis.enabled=false` before the fix (still produced an orphaned Deployment) and after (zero Redis resources at all). For S2, redeployed live and diffed the mock-downstream pod's environment before/after — `POKEPROXY_PORT=tcp://...` plus four `_TCP_*` variables gone entirely. Ran the full app suite (106 passed, ruff clean) and a signed end-to-end request through the real ingress afterward to confirm the chart changes didn't regress anything already working.
+
+**S3's README was written command-by-command against the live cluster, not drafted from memory of what the steps "should" be.** Each step in `deploy/README.md` — cluster create, build+import at the exact HEAD sha, namespace apply, secret seal, `helm upgrade --atomic`, a verification curl — matches a command already re-run and confirmed working during this and the prior two sessions, including the sha-drift warning learned the hard way in Part 2 steps 6–8.
+
+**Result:** `deploy/helm/pokeproxy/templates/pokeproxy/{deployment,service}.yaml`, `redis/{deployment,service}.yaml` gated on `enabled`; `enableServiceLinks: false` added to all three Deployments' pod specs; new `deploy/README.md`. `WORKLOG.md` and the Part 2 planning doc updated to mark S1–S3 fixed. S4 and N1–N6 remain open, untouched by this session. Stopped here per instruction, for review.
+
+### Session 07 — scripts/deploy.sh (2026-08-23)
+
+**Focus:** turn `deploy/README.md`'s manual steps into a single runnable, idempotent script, as asked.
+
+**Running it caught a real bug in the README that reading it never would have.** The documented verify command, `curl -i http://localhost:8080/stream`, sends a bare GET — but `/stream` is POST-only, so it returns **405**, not the 401 the README claimed. That line had never actually been executed as written; it was transcribed from what the app-level behavior *should* look like rather than run against the ingress. The script's verify step (built to assert on the status code, not just print it) failed loudly on first run and surfaced this immediately. Fixed both the script and the README to use `-X POST`, then re-ran twice to confirm: two consecutive full runs against the live cluster, revisions 12 and 13, both `4/4 pods Ready, 0 restarts`, both a genuine `401`.
+
+**Idempotency was designed in, not bolted on.** `k3d cluster list <name>` before creating (reuse if it exists), `kubectl apply` for the namespace (already idempotent), `seal-hmac.sh` unchanged (already fixed to be idempotent in the B1 session), `helm upgrade --install --atomic` (idempotent by construction). The second `deploy.sh` run confirmed all of these held: cluster reused, namespace `unchanged`, sealing key and ciphertext both left untouched, only the Helm revision incremented.
+
+**Result:** new `scripts/deploy.sh`; one-line fix to `deploy/README.md`'s verify step. `WORKLOG.md` updated. No chart or app code touched.
+
+### Session 08 — Part 2 re-audit at HEAD `cd72953` (2026-08-23)
+
+**Focus:** audit Part 2 against `README_HOME_ASSIGNMENT.md` a second time, verifying deployed behavior rather than manifests. Explicit instruction: do not start CI/CD; report gaps by severity; update `WORKLOG.md` and the Part 2 planning doc; stop.
+
+**The first thing the audit found was drift, again.** The cluster was running `pokeproxy:cbb7911` while HEAD was `cd72953` — session 07's two `deploy.sh` runs happened *before* the commit that added the script existed, so the images were tagged one commit behind. Same failure mode Part 2 hit in steps 6, 7 and 8. It costs nothing here because `deploy.sh` rebuilds at `git rev-parse --short HEAD`, but it is the fourth occurrence and it is exactly what Part 3's pipeline removes structurally.
+
+**The decision that made this audit worth running: execute the from-zero path, not just re-check the reuse path.** `deploy.sh` had only ever been run against a cluster that already existed. The claim "a new engineer can stand this up" was still untested. So after running the reuse branch (2m08s, revision 14), I deleted the k3d cluster outright and ran the script once: **4m39s from zero clusters to 4/4 pods Ready and a verified ingress**, `Release "pokeproxy" does not exist. Installing it now.` That also closed the one caveat left on B1 — the committed ciphertext decrypted on a cluster that had never existed, because the sealing key is re-pinned into a freshly installed controller.
+
+**I deliberately did not delete `.secrets/sealing-key.yaml`.** Simulating a true fresh clone would have regenerated the key and rewritten the tracked `values-local.yaml`, leaving the working tree dirty. That specific path was already proven live in the B1 session; the cluster-deletion test proves a different and previously untested property. Recorded the distinction rather than silently substituting one for the other. `values-local.yaml` sha256 was checked before and after both runs and never moved.
+
+**One probe result was nearly a false positive, and catching it mattered.** The first NetworkPolicy test used Service DNS names and reported `DNS_FAIL` alongside three denials — which would have meant the denials were DNS failures, not policy hits, invalidating the whole check. Re-ran it printing `nslookup` output and connecting to raw ClusterIPs instead: DNS resolves correctly (`pokeproxy-redis.pokeproxy.svc.cluster.local` → `10.43.209.105`), busybox `nslookup` just exits non-zero on the search-domain NXDOMAINs it tries first. The three denials are genuine, and now proven without DNS in the path.
+
+**Two new SHOULD FIX items, both found by asking "what does this script do on a machine that isn't this one?"** S5: neither `deploy.sh` nor `seal-hmac.sh` pins a kube context, and `k3d cluster list` is context-independent — measured exit 0 under both `k3d-pokeproxy` and `docker-desktop`. On the reuse path the script skips the only step that would have set the context, then applies a namespace, a private RSA key and a Helm release into whatever context is current. It fails loudly here only because Docker Desktop's Kubernetes is off. S6: S1's `enabled` fix covered the Deployment and Service but not the five other pokeproxy-owned templates, so `enabled=false` still renders an Ingress backing onto a Service that was never created.
+
+**S4 turned out to be worse than it was written down as.** The recorded half is that `values-prod.yaml` renders rules pointing at the mock Service it disables. The unrecorded half: `allow-pokeproxy-egress-to-dependencies` only permits egress to in-namespace redis and mock pods, so even with correct URLs, `default-deny-all` blocks every packet to a real external downstream. Updated the write-up rather than leaving a half-true entry in the backlog.
+
+**Result:** no code or chart changed. New "Part 2 re-audit at HEAD `cd72953`" section in `docs/planning/part-02-infrastructure-deployment.md` with the full evidence table; `WORKLOG.md` Current State and backlog table updated with S5, S6, N7, N8 and the sharpened S4. Stopped here per instruction, for review.
+
+### Session 09 — fixing S5 and S6 (2026-08-23)
+
+**Focus:** implement the two SHOULD FIX items the session-08 re-audit found. Instruction was exactly "fix S5 and S6" — S4 explicitly not in scope, and left open.
+
+**S5's fix shape was the interesting decision, not the bug.** Three ways to pin a context: `kubectl config use-context` at the top, hardcode `--context k3d-pokeproxy` everywhere, or derive it from the cluster name into an overridable variable and pass it explicitly. Went with the third. The argument against `use-context` is that it fixes the symptom by *taking over* the operator's shell instead of making the script independent of it — a deploy script that repoints your `kubectl` as a side effect is its own small footgun. Verified the distinction held: after a successful run the current context was still `docker-desktop`, untouched.
+
+**Proved the fix by reproducing the original misfire first.** Ran the old bare `kubectl apply -f deploy/k8s/namespace.yaml` under the `docker-desktop` context and watched it try to reach `kubernetes.docker.internal:6443`. Then ran the fixed `deploy.sh` from that same wrong context and watched it deploy to `k3d-pokeproxy` anyway. Reproduce-then-fix-then-re-verify, the same standard as the B1/B2 and S1–S3 sessions.
+
+**S6 nearly shipped a silent regression, and the render diff is what caught it.** The obvious placement — `{{- if … }}` after the existing `{{- $var := … -}}` assignments in `configmap-env.yaml` — leaves the `if`'s closing `}}` emitting a newline before `apiVersion:`, because nothing following it starts with `{{-` to strip it. That changed the ConfigMap's rendered bytes, which changed `include … | sha256sum`, which changed `checksum/config-env`, which would have rolled every pokeproxy pod on the next upgrade for a pure whitespace edit. Only visible by diffing full renders against `git show HEAD:` copies of the five templates in a scratch chart. Moving the `if` above the assignments made both `values-local` and `values-prod` renders byte-identical, and the live redeploy confirmed it — checksums unchanged, no pod rolled.
+
+**Deliberately did not gate the four pokeproxy NetworkPolicies**, even though the audit listed them. Checked each one rather than assuming: two select a pod that no longer exists, and the other two permit ingress *from* a selector matching nothing, which leaves redis and mock exactly as closed as `default-deny-all` already makes them. All four are inert, and gating them would thread a per-component flag into a file switched by `networkPolicy.enabled`. Recorded the reasoning in the write-up so the omission reads as a decision, not an oversight.
+
+**Fixed N8 in passing** since the README was being edited anyway: it claimed re-sealing happens on a "fresh clone or fresh cluster", but session 08's from-zero run proved a fresh cluster with the key still on disk correctly does *not* re-seal.
+
+**Result:** `scripts/{deploy,seal-hmac}.sh` context-pinned; five chart templates gated; `deploy/README.md` updated to match and N8 corrected; write-ups `docs/issues/019-deploy-scripts-unpinned-kube-context.md` and `020-pokeproxy-enabled-flag-incomplete.md`. Joint verification: E2E through the real ingress 11/11, `pytest -q` 106 passed, `ruff` clean. S4 and N1–N7 remain open, untouched. Stopped here for review.

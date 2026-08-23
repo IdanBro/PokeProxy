@@ -1,0 +1,84 @@
+{{- $spec := .Values.components.redis -}}
+{{- if $spec.enabled }}
+{{- $fullname := include "pokeproxy.component.fullname" (dict "context" $ "component" "redis") }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pokeproxy.component.labels" (dict "context" $ "component" "redis") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "pokeproxy.component.selectorLabels" (dict "context" $ "component" "redis") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pokeproxy.component.labels" (dict "context" $ "component" "redis") | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $fullname }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: "{{ $spec.image.repository }}:{{ $spec.image.tag }}"
+          imagePullPolicy: {{ $spec.image.pullPolicy }}
+          args:
+            - --save
+            - ""
+            - --appendonly
+            - "no"
+            - --maxmemory
+            - {{ printf "%dmb" (int $spec.maxMemoryMb) | quote }}
+            - --maxmemory-policy
+            - allkeys-lru
+          ports:
+            - name: redis
+              containerPort: {{ $spec.port }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml $spec.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: {{ $spec.probes.startup.periodSeconds }}
+            failureThreshold: {{ $spec.probes.startup.failureThreshold }}
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: {{ $spec.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ $spec.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ $spec.probes.liveness.failureThreshold }}
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: {{ $spec.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ $spec.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ $spec.probes.readiness.failureThreshold }}
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+{{- end }}

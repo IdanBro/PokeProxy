@@ -9,6 +9,11 @@ app = FastAPI(title="Mock Downstream Service")
 received_pokemon: list[dict[str, Any]] = []
 
 
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "alive"}
+
+
 @app.post("/pokemon")
 async def receive_pokemon(request: Request) -> dict[str, str]:
     body = await request.json()
@@ -26,9 +31,3 @@ async def get_received() -> list[dict[str, Any]]:
 async def clear_received() -> dict[str, str]:
     received_pokemon.clear()
     return {"status": "cleared"}
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(app, host="127.0.0.1", port=8001)

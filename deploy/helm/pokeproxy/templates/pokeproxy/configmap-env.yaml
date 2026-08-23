@@ -1,0 +1,21 @@
+{{- if .Values.components.pokeproxy.enabled }}
+{{- $spec := .Values.components.pokeproxy -}}
+{{- $redisSpec := .Values.components.redis -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pokeproxy.component.fullname" (dict "context" $ "component" "pokeproxy") }}-env
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pokeproxy.component.labels" (dict "context" $ "component" "pokeproxy") | nindent 4 }}
+data:
+  POKEPROXY_PORT: {{ $spec.port | quote }}
+  REDIS_URL: {{ printf "redis://%s.%s.svc.cluster.local.:%v/0" (include "pokeproxy.component.fullname" (dict "context" $ "component" "redis")) .Release.Namespace $redisSpec.port | quote }}
+  LOG_LEVEL: {{ $spec.env.logLevel | quote }}
+  FORWARD_MAX_ATTEMPTS: {{ $spec.env.forwardMaxAttempts | quote }}
+  FORWARD_DEADLINE_SECONDS: {{ $spec.env.forwardDeadlineSeconds | quote }}
+  FORWARD_ATTEMPT_TIMEOUT_SECONDS: {{ $spec.env.forwardAttemptTimeoutSeconds | quote }}
+  REDIS_CONNECT_TIMEOUT_SECONDS: {{ $spec.env.redisConnectTimeoutSeconds | quote }}
+  REDIS_SOCKET_TIMEOUT_SECONDS: {{ $spec.env.redisSocketTimeoutSeconds | quote }}
+  CACHE_TTL_SECONDS: {{ $spec.env.cacheTtlSeconds | quote }}
+{{- end }}

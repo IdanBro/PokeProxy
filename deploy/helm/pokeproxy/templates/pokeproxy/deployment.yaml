@@ -1,0 +1,93 @@
+{{- $spec := .Values.components.pokeproxy -}}
+{{- if $spec.enabled }}
+{{- $fullname := include "pokeproxy.component.fullname" (dict "context" $ "component" "pokeproxy") }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pokeproxy.component.labels" (dict "context" $ "component" "pokeproxy") | nindent 4 }}
+spec:
+  replicas: {{ $spec.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "pokeproxy.component.selectorLabels" (dict "context" $ "component" "pokeproxy") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pokeproxy.component.labels" (dict "context" $ "component" "pokeproxy") | nindent 8 }}
+      annotations:
+        checksum/config-env: {{ include (print $.Template.BasePath "/pokeproxy/configmap-env.yaml") . | sha256sum }}
+        checksum/config-rules: {{ include (print $.Template.BasePath "/pokeproxy/configmap-rules.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ $fullname }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: pokeproxy
+          image: "{{ $spec.image.repository }}:{{ $spec.image.tag }}"
+          imagePullPolicy: {{ $spec.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ $spec.port }}
+          envFrom:
+            - configMapRef:
+                name: {{ $fullname }}-env
+            - secretRef:
+                name: {{ $fullname }}-hmac
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml $spec.resources | nindent 12 }}
+          volumeMounts:
+            - name: rules
+              mountPath: /etc/pokeproxy
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: {{ $spec.probes.startup.periodSeconds }}
+            failureThreshold: {{ $spec.probes.startup.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ $spec.probes.liveness.path }}
+              port: http
+            periodSeconds: {{ $spec.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ $spec.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ $spec.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ $spec.probes.readiness.path }}
+              port: http
+            periodSeconds: {{ $spec.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ $spec.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ $spec.probes.readiness.failureThreshold }}
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
+      volumes:
+        - name: rules
+          configMap:
+            name: {{ $fullname }}-rules
+        - name: tmp
+          emptyDir: {}
+{{- end }}

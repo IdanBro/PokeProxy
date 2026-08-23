@@ -1,0 +1,19 @@
+{{- if .Values.components.pokeproxy.enabled }}
+{{- $mockSpec := index .Values.components "mock-downstream" -}}
+{{- $mockName := include "pokeproxy.component.fullname" (dict "context" $ "component" "mock-downstream") -}}
+{{- $downstreamURL := printf "http://%s.%s.svc.cluster.local.:%v/pokemon" $mockName .Release.Namespace $mockSpec.port -}}
+{{- $rules := list -}}
+{{- range .Values.components.pokeproxy.rules }}
+{{- $rules = append $rules (merge . (dict "url" $downstreamURL)) }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pokeproxy.component.fullname" (dict "context" $ "component" "pokeproxy") }}-rules
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pokeproxy.component.labels" (dict "context" $ "component" "pokeproxy") | nindent 4 }}
+data:
+  rules.json: |
+    {{ dict "rules" $rules | toJson | replace "\\u003c" "<" | replace "\\u003e" ">" }}
+{{- end }}
