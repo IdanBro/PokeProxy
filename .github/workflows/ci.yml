@@ -211,3 +211,56 @@ jobs:
           trivyignores: app/.trivyignore
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - run: cosign sign --yes ghcr.io/idanbro/pokeproxy-e2e@${{ steps.build.outputs.digest }}
+
+  promote:
+    name: Promote
+    needs: [build-pokeproxy, build-mock-downstream, build-e2e]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: promote
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    environment:
+      name: production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+      - id: sha
+        run: echo "short=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+      - name: Write image tags and digests
+        env:
+          VALUES_FILE: deploy/envs/prod/values.yaml
+          SHORT: ${{ steps.sha.outputs.short }}
+          POKEPROXY_DIGEST: ${{ needs.build-pokeproxy.outputs.digest }}
+          MOCK_DOWNSTREAM_DIGEST: ${{ needs.build-mock-downstream.outputs.digest }}
+          E2E_DIGEST: ${{ needs.build-e2e.outputs.digest }}
+        run: |
+          yq -i '
+            .components.pokeproxy.image.tag = strenv(SHORT) |
+            .components.pokeproxy.image.digest = strenv(POKEPROXY_DIGEST) |
+            .components["mock-downstream"].image.tag = strenv(SHORT) |
+            .components["mock-downstream"].image.digest = strenv(MOCK_DOWNSTREAM_DIGEST) |
+            .e2e.image.tag = strenv(SHORT) |
+            .e2e.image.digest = strenv(E2E_DIGEST)
+          ' "$VALUES_FILE"
+          git diff "$VALUES_FILE"
+      - name: Commit and push
+        env:
+          SHORT: ${{ steps.sha.outputs.short }}
+          POKEPROXY_DIGEST: ${{ needs.build-pokeproxy.outputs.digest }}
+          MOCK_DOWNSTREAM_DIGEST: ${{ needs.build-mock-downstream.outputs.digest }}
+          E2E_DIGEST: ${{ needs.build-e2e.outputs.digest }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add deploy/envs/prod/values.yaml
+          if git diff --cached --quiet; then
+            echo "No changes to promote (image references already at $SHORT)."
+            exit 0
+          fi
+          git commit -m "chore(deploy): promote $SHORT" -m "pokeproxy@$POKEPROXY_DIGEST" -m "mock-downstream@$MOCK_DOWNSTREAM_DIGEST" -m "pokeproxy-e2e@$E2E_DIGEST"
+          git pull --rebase origin main
+          git push origin HEAD:main

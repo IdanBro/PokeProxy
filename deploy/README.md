@@ -139,3 +139,15 @@ Argo CD reads from **GitHub, not the working tree** — an uncommitted or unpush
 | The E2E Job mounts the real HMAC signing key | a dedicated test credential — not possible today, the app validates against a single key (M3) |
 | Sealing key generated locally and gitignored | a KMS-backed or externally managed key, with the public half committed |
 | `server.insecure: true`, port-forward access | TLS termination and real SSO in front of the Argo CD server |
+
+## CI promote (main only)
+
+The `promote` job in `.github/workflows/ci.yml` runs after `build-pokeproxy`, `build-mock-downstream` and `build-e2e` succeed on a push to `main` — never on a pull request, so opening a PR never writes to the repo. It writes the six tag/digest fields into `deploy/envs/prod/values.yaml` with `yq` (preinstalled on `ubuntu-latest`), commits as `github-actions[bot]` with subject `chore(deploy): promote <sha>` and the three digests in the body, then `git pull --rebase` and pushes to `main` directly — no PR, since a promote-opens-a-PR design would need a human merge on every deploy, trading lead time for a review step nothing in this pipeline benefits from at this size.
+
+**Branch protection bypass.** Today's `main` protection has no required status checks (`required_status_checks` is null), so the bot push needs no exemption. The moment those checks are required — which they should be — this job needs a ruleset exemption for `github-actions[bot]`, or it will be blocked by its own gate. Documented here so it doesn't get discovered as a surprise outage.
+
+**Idempotent by design, not by accident.** If the digests already match (nothing changed since the last promote — e.g. a docs-only commit still runs the full build), the job diffs clean and exits without committing. `yq -i` re-serializes the whole file, which drops the blank lines between blocks on every real promote; no comments or keys are lost, only cosmetic spacing.
+
+**Why this doesn't loop.** GitHub does not re-trigger `push` workflows for commits made with the default `GITHUB_TOKEN` — the promote commit lands on `main` without kicking off a second CI run. Verified against a real run rather than assumed; see `WORKLOG.md`.
+
+**Commit-to-serving.** Measured, not claimed: from the merge commit landing on `main` to the prod pod's running image digest matching what promote wrote. Recorded in `WORKLOG.md` for the specific run that produced the number, since it depends on Argo's `timeout.reconciliation` (30s here) and is not a general guarantee.
