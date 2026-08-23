@@ -17,7 +17,10 @@ metadata:
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
 spec:
   backoffLimit: 0
-  activeDeadlineSeconds: 120
+  # STARTUP_MAX_WAIT_SECONDS (90s, e2e_check.py) can consume most of this budget
+  # on a slow-but-healthy rollout; the deadline must clear it with real margin
+  # for the checks that run after startup, not just barely exceed it (F-8).
+  activeDeadlineSeconds: 180
   ttlSecondsAfterFinished: 3600
   template:
     metadata:
@@ -45,6 +48,8 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ $pokeproxyFullname }}-hmac
+          resources:
+            {{- toYaml .Values.e2e.resources | nindent 12 }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

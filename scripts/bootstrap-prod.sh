@@ -32,7 +32,6 @@ require_command kubectl
 require_command helm
 require_command k3d
 require_command kubeseal
-require_command openssl
 
 docker info >/dev/null 2>&1 || {
   echo "Docker doesn't seem to be running. Start Docker Desktop and re-run." >&2

@@ -8,6 +8,16 @@ Manual, step-by-step version of what Part 5's one-command bootstrap will eventua
 - `kubectl`, `helm`, `k3d`, `kubeseal`, `openssl` on `PATH`
 - A POSIX shell (WSL on Windows — every command below has only been verified there)
 
+## 0. Provision the sealing key (first time only, per environment)
+
+```bash
+bash scripts/init-sealing-key.sh --env local
+```
+
+Mints the Sealed Secrets sealing key at `.secrets/sealing-key-local.yaml`. Deliberately a separate, one-time, human-run step (F-2 fix, `docs/planning/part-03-cicd-gitops.md`): `seal-hmac.sh` used to mint a fresh key silently whenever it found none, which is exactly wrong for `prod` — a fresh clone would mint a key that cannot decrypt the ciphertext already committed to `deploy/envs/prod/values.yaml`, and Argo CD would only discover that ~600s into `bootstrap-prod.sh`'s converge loop as `CreateContainerConfigError`. Refuses to run a second time against an existing key file — read its output for the disaster-recovery procedure if you actually need to rotate one. **Back the printed file up somewhere durable before doing anything else**; it's gitignored, and losing it makes every ciphertext ever sealed against it permanently undecryptable.
+
+Skip this step entirely if `.secrets/sealing-key-local.yaml` already exists — `seal-hmac.sh` (step 4) will use it.
+
 ## 1. Create the cluster
 
 ```bash
@@ -43,7 +53,7 @@ This carries the `pod-security.kubernetes.io/{enforce,audit,warn}: restricted` l
 bash scripts/seal-hmac.sh --env local
 ```
 
-Generates (or reuses) a Sealed Secrets sealing key at the gitignored `.secrets/sealing-key-local.yaml`, installs the Sealed Secrets controller, and writes sealed ciphertext into `deploy/envs/local/values.yaml`. `--env prod` is the same procedure against the prod stand-in cluster (`.secrets/sealing-key-prod.yaml`, `deploy/envs/prod/values.yaml`); it defaults to `local`. Safe to re-run: it only re-seals when a new sealing key was actually generated — i.e. a fresh clone, which has no `.secrets/`. A fresh *cluster* with the key still on disk correctly reuses the existing ciphertext.
+Installs the Sealed Secrets controller against the key from step 0, pins that key into it, and writes sealed ciphertext into `deploy/envs/local/values.yaml`. `--env prod` is the same procedure against the prod stand-in cluster (`.secrets/sealing-key-prod.yaml`, `deploy/envs/prod/values.yaml`); it defaults to `local`. Safe to re-run: it re-seals only when the values file doesn't already hold a value sealed against the current key, otherwise leaves it untouched. **Fails loudly if step 0 hasn't been run** — no key means no silent generation anymore, by design.
 
 ## 5. Deploy
 
@@ -108,7 +118,7 @@ Idempotent, and the order matters:
 |---|---|---|
 | 1 | Create `pokeproxy-prod` if absent | reuses an existing cluster rather than failing on it |
 | 2 | Apply `deploy/k8s/namespace.yaml` | PSA labels must exist before any workload lands |
-| 3 | `seal-hmac.sh --env prod` | generates `.secrets/sealing-key-prod.yaml` and applies it **before** installing the controller, so the controller adopts our key instead of minting its own |
+| 3 | `seal-hmac.sh --env prod` | pins the sealing key from `scripts/init-sealing-key.sh --env prod` (run once, separately — see step 0 above) **before** installing the controller, so the controller adopts our key instead of minting its own. **Exits 1 immediately if that key was never provisioned or restored**, instead of silently minting a fresh one that can't decrypt the committed ciphertext (F-2) |
 | 4 | Install Argo CD | needs the SealedSecret CRD from step 3 to be able to sync the chart |
 | 5 | Apply the `Application` | |
 | 6 | Wait for `Synced` / `Healthy`, then probe the ingress | fails loudly with the Application and pod state if it doesn't converge |
@@ -156,3 +166,17 @@ The `promote` job in `.github/workflows/ci.yml` runs after `build-pokeproxy`, `b
 **Why this doesn't loop.** Pushing with a real PAT is not the same as pushing with the default `GITHUB_TOKEN` — GitHub only suppresses workflow retriggering for the latter, so a PAT-authenticated push to `main` would otherwise kick off a second CI run, which would build, promote again, and repeat. The commit subject carries `[skip ci]`, which GitHub's event dispatcher honors on any push regardless of the authenticating credential — the one loop-prevention mechanism that doesn't depend on which token did the pushing. Verified against a real run rather than assumed; see `WORKLOG.md`.
 
 **Commit-to-serving.** Measured, not claimed: from the merge commit landing on `main` to the prod pod's running image digest matching what promote wrote. Recorded in `WORKLOG.md` for the specific run that produced the number, since it depends on Argo's `timeout.reconciliation` (30s here) and is not a general guarantee.
+
+**Image signatures are not verified anywhere in this chain (F-10).** `cosign sign --yes` runs after every build, but nothing on the pull side — no admission policy in either cluster, no `cosign verify` step before Argo syncs — checks a signature before running the image. `cosign verify` was run once by hand against the real GHCR artifacts as a manual proof the chain works end to end (see `WORKLOG.md`), not as a standing control. Treat signing today as provenance for a human to check after the fact, not as a gate. A real deployment would add a Kubernetes admission policy (e.g. `cosign`'s own policy-controller, or Kyverno's `verifyImages`) requiring a valid signature from the expected OIDC identity before a pod is admitted.
+
+## Rollback
+
+`rollback.yml` (`workflow_dispatch`, input `sha`) resolves that sha's three image digests from GHCR via `docker buildx imagetools inspect`, writes them into `deploy/envs/prod/values.yaml` with the same `yq` pattern as `promote`, lints and validates the rendered chart before committing, then pushes `revert(deploy): roll back to <sha> [skip ci]` to `main` through the same `PROMOTE_PUSH_TOKEN` path. Argo reconciles it like any other commit.
+
+```bash
+gh workflow run rollback.yml -f sha=<7-char short sha>
+```
+
+**Scope: images only, by design, not yet executed live (F-7).** This reverts the three `components.*.image.{tag,digest}` and `e2e.image.{tag,digest}` fields — nothing else in `deploy/envs/prod/values.yaml` or the chart. If a bad deploy came from a chart/manifest/values change instead of a bad image (probes, NetworkPolicy, resource limits, rules), the correct response is a plain `git revert <merge-commit>` on `main`, pushed through the normal PR path — `rollback.yml` does not cover that case and is not meant to. Two different failure classes, two different tools; this section previously implied a single "git revert" mechanism for both, which was imprecise.
+
+**Not yet run against a real failure.** The three rollback scenarios in `docs/planning/part-03-cicd-gitops.md` (rollout failure, verification failure, bad-version-found-later) are designed but not yet executed — tracked as Part 3 step 6.

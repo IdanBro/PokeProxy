@@ -1,0 +1,108 @@
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Short git sha (7 lowercase hex chars) to roll back to. Must already exist as a GHCR tag for all three images."
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    name: Rollback
+    runs-on: ubuntu-latest
+    concurrency:
+      group: promote
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    environment:
+      name: production
+    steps:
+      - name: Validate sha input
+        run: |
+          if ! [[ "${{ inputs.sha }}" =~ ^[0-9a-f]{7}$ ]]; then
+            echo "sha must be exactly 7 lowercase hex characters, got: '${{ inputs.sha }}'" >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          token: ${{ secrets.PROMOTE_PUSH_TOKEN }}
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+
+      - name: Install kubeconform
+        run: |
+          curl -sSL -o kubeconform.tar.gz https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz
+          echo "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883  kubeconform.tar.gz" | sha256sum -c
+          tar -xzf kubeconform.tar.gz kubeconform
+          sudo mv kubeconform /usr/local/bin/kubeconform
+
+      - name: Resolve digests from GHCR
+        id: digests
+        env:
+          SHA: ${{ inputs.sha }}
+        run: |
+          resolve() {
+            local repo="$1" digest
+            digest="$(docker buildx imagetools inspect "ghcr.io/idanbro/$repo:$SHA" | awk '/^Digest:/ {print $2; exit}')"
+            if [[ -z "$digest" ]]; then
+              echo "Could not resolve a digest for ghcr.io/idanbro/$repo:$SHA — does that tag exist?" >&2
+              exit 1
+            fi
+            echo "$digest"
+          }
+          echo "pokeproxy=$(resolve pokeproxy)" >> "$GITHUB_OUTPUT"
+          echo "mock_downstream=$(resolve mock-downstream)" >> "$GITHUB_OUTPUT"
+          echo "e2e=$(resolve pokeproxy-e2e)" >> "$GITHUB_OUTPUT"
+
+      - name: Write image tags and digests
+        env:
+          VALUES_FILE: deploy/envs/prod/values.yaml
+          SHA: ${{ inputs.sha }}
+          POKEPROXY_DIGEST: ${{ steps.digests.outputs.pokeproxy }}
+          MOCK_DOWNSTREAM_DIGEST: ${{ steps.digests.outputs.mock_downstream }}
+          E2E_DIGEST: ${{ steps.digests.outputs.e2e }}
+        run: |
+          yq -i '
+            .components.pokeproxy.image.tag = strenv(SHA) |
+            .components.pokeproxy.image.digest = strenv(POKEPROXY_DIGEST) |
+            .components["mock-downstream"].image.tag = strenv(SHA) |
+            .components["mock-downstream"].image.digest = strenv(MOCK_DOWNSTREAM_DIGEST) |
+            .e2e.image.tag = strenv(SHA) |
+            .e2e.image.digest = strenv(E2E_DIGEST)
+          ' "$VALUES_FILE"
+          git diff "$VALUES_FILE"
+
+      - name: Validate the rendered chart before committing (F-5)
+        run: |
+          helm lint --strict deploy/helm/pokeproxy -f deploy/envs/prod/values.yaml
+          helm template pokeproxy deploy/helm/pokeproxy \
+            -f deploy/envs/prod/values.yaml \
+            -n pokeproxy \
+          | kubeconform -strict -ignore-missing-schemas -kubernetes-version 1.30.5 -summary
+
+      - name: Commit and push
+        env:
+          SHA: ${{ inputs.sha }}
+          POKEPROXY_DIGEST: ${{ steps.digests.outputs.pokeproxy }}
+          MOCK_DOWNSTREAM_DIGEST: ${{ steps.digests.outputs.mock_downstream }}
+          E2E_DIGEST: ${{ steps.digests.outputs.e2e }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add deploy/envs/prod/values.yaml
+          if git diff --cached --quiet; then
+            echo "No changes to roll back (image references already at $SHA)."
+            exit 0
+          fi
+          git commit -m "revert(deploy): roll back to $SHA [skip ci]" -m "pokeproxy@$POKEPROXY_DIGEST" -m "mock-downstream@$MOCK_DOWNSTREAM_DIGEST" -m "pokeproxy-e2e@$E2E_DIGEST"
+          git pull --rebase origin main
+          git push origin HEAD:main

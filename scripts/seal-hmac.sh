@@ -55,32 +55,12 @@ require_command() {
 require_command kubectl
 require_command helm
 require_command kubeseal
-require_command openssl
 
 kubectl config get-contexts "$KUBE_CONTEXT" >/dev/null 2>&1 || {
   echo "Kube context '$KUBE_CONTEXT' not found. Create the cluster first, or set KUBE_CONTEXT=<name>." >&2
   exit 1
 }
 echo "Sealing for environment '$ENVIRONMENT' against kube context '$KUBE_CONTEXT'"
-
-generate_sealing_key() {
-  local work_dir
-  work_dir="$(mktemp -d)"
-  trap 'rm -rf "$work_dir"' RETURN
-
-  openssl req -x509 -days 3650 -nodes -newkey rsa:4096 \
-    -keyout "$work_dir/tls.key" -out "$work_dir/tls.crt" \
-    -subj "/CN=sealed-secret/O=sealed-secret" 2>/dev/null
-
-  kubectl create secret tls sealed-secrets-key \
-    --namespace "$CONTROLLER_NAMESPACE" \
-    --cert="$work_dir/tls.crt" --key="$work_dir/tls.key" \
-    --dry-run=client -o yaml \
-    | kubectl label --local -f - \
-      sealedsecrets.bitnami.com/sealed-secrets-key=active \
-      -o yaml \
-    > "$SEALING_KEY_MANIFEST"
-}
 
 already_sealed() {
   local file="$1" current
@@ -107,14 +87,24 @@ write_encrypted_value() {
 
 mkdir -p "$SECRETS_DIR"
 
-key_freshly_generated=false
 if [[ ! -f "$SEALING_KEY_MANIFEST" ]]; then
-  echo "Generating sealed-secrets sealing key at $SEALING_KEY_MANIFEST"
-  generate_sealing_key
-  key_freshly_generated=true
-else
-  echo "Reusing existing sealing key at $SEALING_KEY_MANIFEST"
+  cat <<EOF >&2
+No sealing key found at $SEALING_KEY_MANIFEST.
+
+This script no longer mints one for you (F-2, docs/planning/part-03-cicd-gitops.md):
+silently generating a fresh key here would re-seal $VALUES_FILE against a key
+that does not match whatever ciphertext is already committed to git, and for
+'$ENVIRONMENT' that ciphertext is what Argo CD is actually reconciling from —
+a mismatch surfaces 600s later as CreateContainerConfigError, not here.
+
+Provision the key deliberately instead:
+  bash scripts/init-sealing-key.sh --env $ENVIRONMENT
+or restore your backed-up $SEALING_KEY_MANIFEST from wherever you saved it
+when it was first provisioned.
+EOF
+  exit 1
 fi
+echo "Using sealing key at $SEALING_KEY_MANIFEST"
 
 echo "Pinning sealing key into $CONTROLLER_NAMESPACE"
 kubectl --context "$KUBE_CONTEXT" apply -f "$SEALING_KEY_MANIFEST" >/dev/null
@@ -134,9 +124,7 @@ helm upgrade --install sealed-secrets sealed-secrets/sealed-secrets \
 kubectl --context "$KUBE_CONTEXT" rollout status \
   deployment/"$CONTROLLER_NAME" -n "$CONTROLLER_NAMESPACE" --timeout=90s >/dev/null
 
-if [[ "$key_freshly_generated" == true ]]; then
-  echo "Sealing key was freshly generated — re-sealing $VALUES_FILE against it regardless of its current contents"
-elif already_sealed "$VALUES_FILE"; then
+if already_sealed "$VALUES_FILE"; then
   echo "$VALUES_FILE already holds a value sealed against the existing key, leaving it as-is"
   exit 0
 fi

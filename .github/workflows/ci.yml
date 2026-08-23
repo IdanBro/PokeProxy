@@ -8,7 +8,10 @@ on:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A cancelled run on main could cancel a promote job mid-push (F-6). PRs and
+  # workflow_dispatch stay cancel-on-superseded; main only ever appends commits,
+  # so a run there is left to finish rather than raced against the next one.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -214,7 +217,7 @@ jobs:
 
   promote:
     name: Promote
-    needs: [build-pokeproxy, build-mock-downstream, build-e2e]
+    needs: [chart-lint, build-pokeproxy, build-mock-downstream, build-e2e]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency:
@@ -248,6 +251,20 @@ jobs:
             .e2e.image.digest = strenv(E2E_DIGEST)
           ' "$VALUES_FILE"
           git diff "$VALUES_FILE"
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+      - name: Install kubeconform
+        run: |
+          curl -sSL -o kubeconform.tar.gz https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz
+          echo "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883  kubeconform.tar.gz" | sha256sum -c
+          tar -xzf kubeconform.tar.gz kubeconform
+          sudo mv kubeconform /usr/local/bin/kubeconform
+      - name: Validate the values file promote is about to write (F-5)
+        run: |
+          helm lint --strict deploy/helm/pokeproxy -f deploy/envs/prod/values.yaml
+          helm template pokeproxy deploy/helm/pokeproxy \
+            -f deploy/envs/prod/values.yaml \
+            -n pokeproxy \
+          | kubeconform -strict -ignore-missing-schemas -kubernetes-version 1.30.5 -summary
       - name: Commit and push
         env:
           SHORT: ${{ steps.sha.outputs.short }}
