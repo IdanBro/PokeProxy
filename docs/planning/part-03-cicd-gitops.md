@@ -494,3 +494,26 @@ One hypothetical commit traced end to end against `README_HOME_ASSIGNMENT.md` Pa
 **F-17** — fork PRs cannot run `build-*`: `secrets.GITHUB_TOKEN` on a fork PR has read-only `packages`. Irrelevant for a single-author repo, worth one sentence.
 
 **F-18** — the branch-protection/PAT episode is one of the more interesting real findings in Part 3 and has no `docs/issues/` write-up.
+
+## Requirement audit — 2026-08-24 (second pass, live re-verification)
+
+Same trace repeated a day later, against `origin/main` at `da55fc1` (the promote following PR #7). Unlike the 2026-08-23 pass, every claim below is read from a live system in this session — `gh`, `kubectl`, `cosign`, `docker buildx imagetools` via WSL, not from `WORKLOG.md`'s prior record. Purpose: catch drift or regressions between "fixed and merged" and "actually still true." Part 4 observability out of scope, per instruction.
+
+| Stage | Live check this session | Result |
+|---|---|---|
+| Merge gate | `gh api .../branches/main/protection` | `required_status_checks.contexts = ["Chart lint","Lint","Test"]`, `strict:true` — F-11 still closed |
+| CI on the actual last merge | `gh run list` | push to `main` @ `5966025` → run [32668762523](https://github.com/IdanBro/PokeProxy/actions/runs/32668762523), **success** |
+| Image publication | `docker buildx imagetools inspect ghcr.io/idanbro/pokeproxy@sha256:87a5a28e…` (anonymous) | resolves, OCI index, pullable |
+| Signing | `cosign verify` against that digest, expected OIDC issuer/identity | verified, transparency-log claim confirmed |
+| Desired-state change | current `deploy/envs/prod/values.yaml` | tag/digest = `5966025` / `sha256:87a5a28e…`, matches the promote commit body |
+| Reconcile | `kubectl -n argocd get application pokeproxy` | `Synced Healthy da55fc1…` — the **exact latest commit**, not a stale prior sync |
+| Rollout | `kubectl get pods -o jsonpath` on both prod pods | both `Running`, image = `ghcr.io/idanbro/pokeproxy@sha256:87a5a28e…`, byte-for-byte match to git |
+| Serving | `curl -X POST localhost:8081/stream` | `401` — live, correct |
+| Rollback path | `rollback.yml` exists, last real run [32666881696](https://github.com/IdanBro/PokeProxy/actions/runs/32666881696) success | unchanged from 2026-08-23, not re-executed this pass (would mutate prod for no new information) |
+| F-8 timing margin | `app/e2e/e2e_check.py:30` `STARTUP_MAX_WAIT_SECONDS = 90` vs `job.yaml:23` `activeDeadlineSeconds: 180` | 90s margin for assertions after startup, as fixed |
+
+**Conclusion: no regressions.** Every F-1–F-18 fix from the 2026-08-23 audit still holds, verified against running state rather than re-read from `WORKLOG.md`. The pipeline this document describes is, right now, the pipeline actually running.
+
+**One new finding, doc-only:**
+
+**N1 — `deploy/README.md`'s Rollback section (lines 180–182) is stale and contradicts this plan's own DoD table.** It reads "Not yet run against a real failure" and describes F-7 as "not yet executed live" for all three rollback scenarios. In fact, scenarios A, B and C were all executed live on 2026-08-23 with captured evidence (`WORKLOG.md`, "Step 6 scenarios A and B" / "Scenario C — executed live"), and this document's own DoD item 9 already reads **Done**. The PR that closed step 7 ([#7](https://github.com/IdanBro/PokeProxy/pull/7)) updated `WORKLOG.md`, issue write-ups and `AI_WORKFLOW.md` but missed this section of `deploy/README.md`. Severity: **NICE TO HAVE** — no functional impact, but deliverable 8 is a README a reviewer reads to understand the submission, and it currently understates what was actually proven. **Fixed** — `deploy/README.md`'s Rollback section now summarizes all three executed scenarios with results, in place of the stale "not yet executed" paragraph.
