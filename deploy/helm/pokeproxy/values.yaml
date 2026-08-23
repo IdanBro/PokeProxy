@@ -1,3 +1,6 @@
+hmac:
+  encryptedValue: CHANGEME
+
 components:
   pokeproxy:
     enabled: true

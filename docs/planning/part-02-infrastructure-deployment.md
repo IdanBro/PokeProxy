@@ -70,7 +70,7 @@ The general rule "don't hand-roll infrastructure" is right, and for anything sta
 | 4 | Helm chart skeleton: `Chart.yaml`, values, namespace + PSA, ServiceAccounts | **Done** |
 | 5 | Workload templates: redis, mock, pokeproxy — probes, resources, securityContext, `checksum/config`, rules via `toJson` (H6, H7) | **Done** |
 | 6 | k3d cluster definition, `k3d image import`, first `helm upgrade --install` | **Done** |
-| 7 | Sealed Secrets: controller, pinned sealing key, `seal-hmac.sh` | Not started |
+| 7 | Sealed Secrets: controller, pinned sealing key, `seal-hmac.sh` | **Done** |
 | 8 | Ingress + Traefik body cap (M2) + NetworkPolicy | Not started |
 | 9 | Rollout / termination / measurement pass | Not started |
 | 10 | `values-prod.yaml` + issue write-ups + WORKLOG | Not started |
@@ -307,3 +307,43 @@ Verified by execution:
 **Not yet verified — explicitly out of step 6's scope:** Traefik/ingress (step 8, not wired to anything yet — it's running idle, harmlessly, as a k3d default), whether `checksum/config` triggers a live rollout on a real `helm upgrade` (step 9), and real load-based resource measurement (step 9). The HMAC secret existing only as a manual `kubectl create secret` — not reproducible from a clean clone yet — is exactly what step 7 closes.
 
 No Python changed. `app/` was used only as a verification client (building signed protobuf requests against the real proto module) — nothing in it was modified.
+
+## Step 7 — result
+
+Replaced step 6's manual `kubectl create secret` with the real Sealed Secrets flow, and proved the design's central claim by actually tearing down and recreating the cluster — not just asserting it would work.
+
+**Controller:** chart `sealed-secrets/sealed-secrets` v2.19.3 (chart's own latest at time of writing) from `https://bitnami.github.io/sealed-secrets`, `--set image.registry=ghcr.io` (confirmed both `ghcr.io/bitnami/sealed-secrets-controller:0.39.1` and the `docker.io` equivalent exist before committing to either — picked `ghcr.io` per the design's reasoning to sidestep the Bitnami catalog migration), `fullnameOverride=sealed-secrets-controller` (the chart names itself `sealed-secrets`; `kubeseal`'s own default `--controller-name` expects `sealed-secrets-controller`), `keyrenewperiod="0"` to keep sealing deterministic against one pinned key. `kubeseal` CLI installed pinned to the exact matching version, `v0.39.1`, from the project's own GitHub Releases — client/server version parity matters for this tool specifically, since the wire format can evolve between versions.
+
+**Sealing key, generated once via the documented "bring your own certificate" recipe** (`openssl req -x509 -newkey rsa:4096 ...`, wrapped as a `kubernetes.io/tls` Secret named `sealed-secrets-key` in `kube-system`, labeled `sealedsecrets.bitnami.com/sealed-secrets-key: active`), saved as a complete, self-sufficient manifest at `.secrets/sealing-key.yaml` — gitignored (new root `.gitignore`), but persists across `k3d cluster delete && k3d cluster create` on this machine, which is exactly what makes the design work: the controller adopts whatever key is labeled active in its own namespace at startup, so reusing the same local file means the same key every time, without ever putting the private key in git.
+
+**`kubeseal --raw --from-file=POKEPROXY_HMAC_KEY=<value-file>` outputs a bare ciphertext string** (confirmed by running it, not assumed from docs) — exactly what a `SealedSecret`'s `spec.encryptedData.<KEY>` field needs. New `templates/pokeproxy/sealedsecret-hmac.yaml` templates the `SealedSecret` CRD from `.Values.hmac.encryptedValue`; new `values-local.yaml` holds the real ciphertext (first genuinely static local-only value for this file, as flagged back in step 6). `values.yaml`'s base default is `hmac.encryptedValue: CHANGEME` — same fail-loud-not-silently-wrong pattern already used for the two image tags: an un-sealed deployment gets an immediately diagnosable "this isn't valid ciphertext" failure from the controller, not a blank credential.
+
+**New `scripts/seal-hmac.sh`** — the actual step-7 deliverable, not just the manual commands used to explore. Idempotent: generates the sealing key only if `.secrets/sealing-key.yaml` is absent, always re-applies it and re-installs the controller (both safe no-ops when already correct), and only reseals the HMAC value if `values-local.yaml` is missing or still holds the `CHANGEME` placeholder. Ran it twice against the *same* already-provisioned cluster first to confirm the short-circuit path is a true no-op before trusting it for the real test.
+
+**HMAC value sealed is the existing documented dev secret** (`.env.example`'s value), not a freshly random one — consistent with L1's already-accepted reasoning (`docs/issues/000-known-gaps.md`) that a shared local-dev secret is a documented convenience, not a gap. `scripts/load_generator.py --secret` and every manual verification script in this project continue to work unmodified against this cluster. Overridable via `POKEPROXY_HMAC_KEY` env var for a real (non-dev) deployment reusing this same script pattern.
+
+**The actual verification, run for real:**
+1. `k3d cluster delete pokeproxy` — the cluster from step 6, gone entirely.
+2. `k3d cluster create --config deploy/k3d/cluster.yaml` — 33s, fresh node.
+3. `bash scripts/seal-hmac.sh` — reused the *existing* `.secrets/sealing-key.yaml`, applied it, installed the controller. Controller log on the brand-new cluster: `"registered private key" secretname=sealed-secrets-key` — **no** "generated new key" line. Script correctly found `values-local.yaml` already had a real value and left it untouched.
+4. Namespace + PSA labels, `k3d image import`, `helm upgrade --install -f values-local.yaml --wait --timeout 3m` — **succeeded on the first try**, all 4 pods `1/1 Running`, zero manual secret creation this time.
+5. Signed request through a fresh `kubectl port-forward`: a legendary Pokémon (Articuno) → `200 {"status":"received"}` — the exact same committed ciphertext, decrypted by a controller that had never seen this specific cluster before, produced a working HMAC key that verified a real signature.
+
+The resulting `Secret pokeproxy-hmac` carries a proper `ownerReference` to the `SealedSecret` CR (`controller: true`), confirmed via `kubectl get secret ... -o jsonpath`. The step-6 manual secret was deleted before this flow ran, so there was no ownership collision to work around — unlike the Namespace situation in step 6, the `SealedSecret` CR is a resource the controller reconciles independently, not something Helm and another actor both try to own.
+
+**One process hiccup, not a design bug:** the first deploy attempt this step failed with `ImagePullBackOff` — `pull access denied` for `pokeproxy:146c88a`. Root cause: I'd committed step 6 between sessions, so `git rev-parse --short HEAD` now returned a sha that was never built or `k3d image import`ed (only the prior `da102ba` had been). Rebuilt both images at the current sha, reimported, retried — succeeded. A real reminder of why CI (Part 3) always builds and imports at the exact sha it's about to deploy, never relies on a stale local image cache.
+
+Verified by execution:
+
+| Check | Result |
+|---|---|
+| `helm lint . --strict` (with `values-local.yaml`) | Clean |
+| Controller adopts the pinned key, both before and after cluster recreation | Confirmed via controller log, both times: `registered private key`, never `generated new key` |
+| `values-local.yaml` ciphertext | Byte-identical before and after the delete/recreate cycle — re-running the bootstrap doesn't churn git |
+| `helm upgrade --install --wait --timeout 3m` on the fresh cluster | Succeeds first try, 0 manual steps, 0 restarts |
+| Signed request end-to-end on the recreated cluster | `200 {"status":"received"}` for a matching payload; `200 {}` for a non-matching one (proves signature verification passed either way — a bad key fails with 401, not 200) |
+| `kubectl get secret pokeproxy-hmac -o jsonpath='{.metadata.ownerReferences}'` | Owned by the `SealedSecret` CR, `controller: true` |
+
+**Not yet verified — explicitly out of scope here:** whether `seal-hmac.sh` correctly handles a *genuinely* fresh clone (no `.secrets/` at all) — that path generates a new key and reseals, which is the documented, accepted trade-off, but wasn't exercised this session since `.secrets/` already existed throughout. `values-prod.yaml`'s equivalent secret story (step 10) is intentionally out of scope — no production cluster exists to seal against.
+
+No Python changed.

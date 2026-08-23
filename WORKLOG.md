@@ -6,7 +6,7 @@ This document is the persistent engineering state for the assignment. I update i
 
 ## Current State
 
-**Current phase:** **Part 2 — Infrastructure & Deployment, steps 1–6 of 10 done.** A real k3d cluster is running with the full stack deployed and verified end-to-end (signed request → forward → dedup, all over cluster DNS). Design agreed and recorded in `docs/planning/part-02-infrastructure-deployment.md`; the Part 2 section below carries decisions and measured results. Branch `feature/infra-and-deployment`. Part 1 is functionally complete (detail retained below).
+**Current phase:** **Part 2 — Infrastructure & Deployment, steps 1–7 of 10 done.** A real k3d cluster is running with the full stack deployed, secrets handled via Sealed Secrets, and the design proven by an actual cluster delete + recreate cycle — not just asserted. Design agreed and recorded in `docs/planning/part-02-infrastructure-deployment.md`; the Part 2 section below carries decisions and measured results. Branch `feature/infra-and-deployment`. Part 1 is functionally complete (detail retained below).
 
 **Part 1 (complete) — both final-audit SHOULD FIX findings closed.** R1 (retry attempt-timeout, `docs/issues/012-retry-attempt-timeout.md`) and D1 (consolidated known-gaps write-up, `docs/issues/000-known-gaps.md`) are fixed. 15 issue IDs now fixed across 12 changes, 13 write-ups, **101 tests** passing from `app/` and the repo root, `ruff` clean. R2, R3, R4 (nice to have, from the same audit) and the pre-existing NICE TO HAVE backlog (L1, L2, L5, M6, H6) remain open, tracked in `docs/issues/000-known-gaps.md`. Part 1 is functionally complete; Part 2 not started.
 
@@ -28,8 +28,8 @@ This document is the persistent engineering state for the assignment. I update i
 - **Wave 5 (M7-CWD) — test suite no longer depends on the invoking shell's working directory.** New `app/tests/conftest.py` pins CWD to `app/` via `pytest_configure()`, computed from the test files' own location. Verified from three different working directories (`app/`, repo root, `/tmp`) — 94/94 every time. Write-up: `docs/issues/011-test-suite-cwd-dependence.md`.
 
 **Currently working on:**
-- Part 2, stopped after step 6 (real cluster deployment) for review before step 7. R2, R3 and the pre-existing NICE TO HAVE items are open and tracked in `docs/issues/000-known-gaps.md`. **H6 and H7's cluster-side half are fully closed and now live-verified**, not just rendered — see below.
-- **Local environment state:** k3d cluster `pokeproxy` is running (1 server node, k3s v1.35.5-k3s1) with the full stack deployed (helm release `pokeproxy`, revision 2) and healthy. `kubectl`/`k3d` now installed in WSL at `~/.local/bin`. The `pokeproxy-hmac` Secret in the cluster right now is a **manually-created placeholder** (not committed, not reproducible from a clean clone) — step 7 replaces it with the real Sealed Secrets flow.
+- Part 2, stopped after step 7 (Sealed Secrets) for review before step 8. R2, R3 and the pre-existing NICE TO HAVE items are open and tracked in `docs/issues/000-known-gaps.md`. **H6 and H7's cluster-side half are fully closed and live-verified.**
+- **Local environment state:** k3d cluster `pokeproxy` is running (recreated fresh during step 7's verification) with the full stack deployed via `helm upgrade --install -f values-local.yaml`, healthy, `pokeproxy-hmac` now provisioned by the real Sealed Secrets controller — no manual secret creation remaining. `kubectl`/`k3d`/`kubeseal` installed in WSL at `~/.local/bin`. `.secrets/sealing-key.yaml` (gitignored) holds the pinned sealing keypair; `deploy/helm/pokeproxy/values-local.yaml` (committed) holds the sealed HMAC ciphertext.
 
 **New standing rule (2026-08-23), added to `CLAUDE.md`:** write self-explanatory code with no comments (SOLID where the code has real structure to benefit — not forced onto trivial code); when a change makes existing code or tests obsolete, remove them as part of that change instead of leaving dead weight, scoped to what the current change touches. Applied immediately in step 3 — see below.
 
@@ -46,8 +46,8 @@ This document is the persistent engineering state for the assignment. I update i
 **Why M2 deferred rather than fixed:** user's explicit call, consistent with the H5 percentile-removal precedent — this class of protection is also achievable at the ingress/reverse-proxy layer in Part 2 (e.g., an Ingress `client_max_body_size`-equivalent), which is the more standard place production systems put it and rejects before the request even reaches this process. Recorded as a Part 2 addition below (defense-in-depth, not a replacement for the app-level fix, which stays scoped and ready if picked back up first).
 
 **Next:**
-1. Part 2 step 7 — Sealed Secrets: install the controller, pin the sealing key so it survives cluster recreation, `seal-hmac.sh`, replace the manual `pokeproxy-hmac` Secret with a committed SealedSecret. `values-local.yaml` gets created here (first genuinely static local-only value: the encrypted HMAC ciphertext). Pending review of step 6.
-2. Remaining NICE TO HAVE items (L1, L2, L5, R2, R3) stay tracked in `docs/issues/000-known-gaps.md` and don't block Part 2. M2's ingress half closes in step 8.
+1. Part 2 step 8 — Ingress + Traefik body-cap Middleware (M2, defense-in-depth) + NetworkPolicy (default-deny + explicit allows). This is where Traefik, already running idle in the cluster since step 6, finally gets wired to something. Pending review of step 7.
+2. Remaining NICE TO HAVE items (L1, L2, L5, R2, R3) stay tracked in `docs/issues/000-known-gaps.md` and don't block Part 2.
 
 **R1 — per-attempt HTTP timeout now less than the retry deadline (final audit fix).** `Settings.forward_attempt_timeout_seconds` (`FORWARD_ATTEMPT_TIMEOUT_SECONDS`, default 3.0) replaces the hardcoded `read=10.0`/`write=10.0` in the shared `httpx.AsyncClient`, which previously equalled `FORWARD_DEADLINE_SECONDS` and let one slow attempt consume the whole retry budget. New `Settings.model_validator` rejects `attempt_timeout >= deadline` at startup by name, so the exact bug can't be reintroduced via misconfiguration. `main.py` gained `_build_http_client(settings)` so the client construction is independently testable. Live re-probe against the same black-hole socket used in the audit: **3 of 3 attempts in 9.70s**, was 1 of 3 in 10.17s. New `test_retry_timeout.py` uses a real TCP server (a custom `httpx` transport bypasses timeout enforcement entirely) — surfaced that Python 3.13's `asyncio.Server.wait_closed()` also waits for already-accepted connections' handlers to finish, so the test's hung-server fixture cancels its handler tasks explicitly rather than waiting on them. 7 new tests (94 → 101): 5 in `test_config.py`, 2 in `test_retry_timeout.py`. `ruff check .` clean. Full detail in `docs/issues/012-retry-attempt-timeout.md`.
 
@@ -419,6 +419,29 @@ Verified by execution:
 **Not yet verified, explicitly out of scope here:** Traefik/ingress (step 8; running idle as a k3d default, wired to nothing), `checksum/config` triggering a live rollout (step 9), real load-based resource measurement (step 9). Full detail, including the exact failing commands for both bugs, in `docs/planning/part-02-infrastructure-deployment.md`.
 
 No Python changed — `app/` was used only as a verification client (building real signed protobuf requests), not modified.
+
+**Step 7 (Sealed Secrets) — done 2026-08-23.** Replaced step 6's manual `kubectl create secret` with the real flow: controller (`sealed-secrets/sealed-secrets` v2.19.3, `ghcr.io/bitnami/sealed-secrets-controller:0.39.1`, `fullnameOverride=sealed-secrets-controller`, `keyrenewperiod=0`), `kubeseal` v0.39.1 pinned to match, a self-signed sealing keypair persisted at gitignored `.secrets/sealing-key.yaml`, new `templates/pokeproxy/sealedsecret-hmac.yaml`, new `values-local.yaml` holding the real ciphertext, and the actual deliverable script `scripts/seal-hmac.sh` (idempotent: generates the key only if absent, reseals only if `values-local.yaml` is absent or still `CHANGEME`).
+
+**The design's central claim was actually tested, not asserted:** `k3d cluster delete pokeproxy` → recreate → `bash scripts/seal-hmac.sh` (reused the existing local sealing key; controller log confirmed `registered private key`, never `generated new key`) → namespace/images/`helm upgrade --install -f values-local.yaml --wait` → **succeeded first try, 0 manual steps, 0 restarts** → a fresh signed request through a new `port-forward` returned `200 {"status":"received"}`. `values-local.yaml`'s ciphertext is byte-identical before and after the cycle.
+
+Sealed the *existing* documented dev secret (`.env.example`'s value), not a fresh random one — consistent with L1's already-accepted reasoning that a shared local-dev secret is a documented convenience. Keeps `load_generator.py` and every manual verification script working unmodified against this cluster; overridable via `POKEPROXY_HMAC_KEY` env var for anyone reusing the script with a real secret.
+
+**One process hiccup, not a design bug:** first deploy attempt this step hit `ImagePullBackOff` — `pokeproxy:146c88a` was never built/imported (only `da102ba` had been, from before this session's commit). Rebuilt both images at the current sha, reimported, retried successfully. A live reminder of why CI always builds at the exact sha it deploys.
+
+Verified by execution:
+
+| Check | Result |
+|---|---|
+| `helm lint . --strict` (with `values-local.yaml`) | Clean |
+| Controller adopts the pinned key | Confirmed via log, both before and after cluster recreation — never mints a new one |
+| `values-local.yaml` ciphertext | Byte-identical across the delete/recreate cycle |
+| Fresh-cluster deploy, `--wait --timeout 3m` | Succeeds first try, 0 manual steps, 0 restarts |
+| Signed request on the recreated cluster | `200 {"status":"received"}` (matching payload); `200 {}` (non-matching, still proves signature verification passed) |
+| `pokeproxy-hmac` Secret ownership | `ownerReferences` points at the `SealedSecret` CR, `controller: true` |
+
+**Not yet verified, explicitly out of scope:** a genuinely fresh clone with no local `.secrets/` at all (documented, accepted trade-off — generates a new key and reseals); `values-prod.yaml`'s equivalent (step 10, no production cluster to seal against).
+
+No Python changed.
 
 ---
 
