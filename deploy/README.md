@@ -177,6 +177,14 @@ The `promote` job in `.github/workflows/ci.yml` runs after `build-pokeproxy`, `b
 gh workflow run rollback.yml -f sha=<7-char short sha>
 ```
 
-**Scope: images only, by design, not yet executed live (F-7).** This reverts the three `components.*.image.{tag,digest}` and `e2e.image.{tag,digest}` fields — nothing else in `deploy/envs/prod/values.yaml` or the chart. If a bad deploy came from a chart/manifest/values change instead of a bad image (probes, NetworkPolicy, resource limits, rules), the correct response is a plain `git revert <merge-commit>` on `main`, pushed through the normal PR path — `rollback.yml` does not cover that case and is not meant to. Two different failure classes, two different tools; this section previously implied a single "git revert" mechanism for both, which was imprecise.
+**Scope: images only, by design (F-7).** This reverts the three `components.*.image.{tag,digest}` and `e2e.image.{tag,digest}` fields — nothing else in `deploy/envs/prod/values.yaml` or the chart. If a bad deploy came from a chart/manifest/values change instead of a bad image (probes, NetworkPolicy, resource limits, rules), the correct response is a plain `git revert <merge-commit>` on `main`, pushed through the normal PR path — `rollback.yml` does not cover that case and is not meant to. Two different failure classes, two different tools; this section previously implied a single "git revert" mechanism for both, which was imprecise.
 
-**Not yet run against a real failure.** The three rollback scenarios in `docs/planning/part-03-cicd-gitops.md` (rollout failure, verification failure, bad-version-found-later) are designed but not yet executed — tracked as Part 3 step 6.
+**Executed live against the real prod cluster, 2026-08-23** (`WORKLOG.md`, "Step 6 scenarios A and B" / "Scenario C — executed live"). All three scenarios from `docs/planning/part-03-cicd-gitops.md` ran with captured evidence:
+
+| Scenario | Setup | Result |
+|---|---|---|
+| A — rollout failure | `kubectl set image` to a non-existent tag | new pod stuck `ImagePullBackOff`; both old pods stayed `Running` throughout (`maxUnavailable: 0`); load generator measured 241 requests, 0 errors |
+| B — verification failure | rules ConfigMap edited to a wrong `reason`, pods healthy but functionally wrong | PostSync E2E pod: `phase=Failed exitCode=1`, exact assertion mismatch logged; recovery confirmed via `selfHeal` restoring the correct ConfigMap and a fresh ReplicaSet |
+| C — bad version found later | `gh workflow run rollback.yml -f sha=b281080` against a healthy prod | run [32666881696](https://github.com/IdanBro/PokeProxy/actions/runs/32666881696) succeeded; commit landed on `main` with no PR; all six digests matched; `[skip ci]` suppressed a second CI run; `bootstrap-prod.sh` confirmed prod reconciled with a passing PostSync E2E and a correct `401` on a live probe |
+
+Part 3 step 6 and DoD item 9 are closed on this evidence.
