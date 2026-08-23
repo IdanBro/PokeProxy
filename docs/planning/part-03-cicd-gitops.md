@@ -235,7 +235,7 @@ docs/
 | 3 | **E2E: script, derived image, hook Job, 3 NetworkPolicy rules** — proven on the existing dev cluster | **L** | **Done** — verified live, see WORKLOG |
 | 4 | Prod stand-in cluster + Argo CD + `deploy/envs/` move (closes S4, N7) | M–L | **Done** — split 4a/4b, verified live, see WORKLOG |
 | 5 | CI promote job with the production Environment; measure commit to serving | S–M | **Done** — verified live via PR #4, see WORKLOG |
-| 6 | `rollback.yml` plus all three failure scenarios executed | M | Not started |
+| 6 | `rollback.yml` plus all three failure scenarios executed | M | **Done** — verified live, see WORKLOG |
 | 7 | Issue write-ups, `deploy/README.md`, WORKLOG, AI_WORKFLOW | M | Not started |
 
 Step 3 sits before step 4 deliberately: the E2E is the highest-value and highest-risk piece, it is fully provable on the cluster that already exists, and it stands on its own even if the prod cluster never happens.
@@ -427,7 +427,7 @@ Status as of the 2026-08-23 requirement audit (below). Evidence for every **Done
 | 6 | PostSync E2E sends real protobuf and HMAC through the ingress and validates the mock downstream result, passing, with logs captured | **Done** — read from Argo's own `operationState`, corroborated by the unique record in the mock's `/received` |
 | 7 | The dev path still works after the values move | **Done** — render byte-identical before/after; `deploy.sh` green at revision 11 |
 | 8 | Commit to serving measured and recorded | **Done, with a stated caveat** — 155s, but Argo's refresh was force-triggered rather than left to the 30s poll. The passive-path number is still unmeasured |
-| 9 | All three rollback scenarios executed with captured output | **A and B done, live, 2026-08-23** — see WORKLOG ("Step 6 scenarios A and B"). **C not done**: needs `rollback.yml` merged to `main` and dispatched for real; landing now via a branch + PR |
+| 9 | All three rollback scenarios executed with captured output | **Done, live, 2026-08-23** — A, B and C all executed with captured evidence. See WORKLOG ("Step 6 scenarios A and B", "Scenario C — executed live") |
 | 10 | S4 and N7 closed with write-ups | **Partial** — both fixed and recorded as prose in `WORKLOG.md`'s backlog table; no `docs/issues/021+` files yet (step 7) |
 | 11 | Anything not verified by execution is labelled as not verified | **Held** — including in this table |
 

@@ -6,7 +6,7 @@ This document is the persistent engineering state for the assignment. I update i
 
 ## Current State
 
-**Current phase:** **Part 3 — CI/CD & GitOps: steps 1–5 done and verified live; audited 2026-08-23, steps 6–7 open.** A requirement-by-requirement audit against `README_HOME_ASSIGNMENT.md` traced one hypothetical commit through CI → image publication → desired state → rollout → post-deploy E2E → failure handling → rollback. Full trace table and all 18 findings: `docs/planning/part-03-cicd-gitops.md` § "Requirement audit". Three blockers, eight should-fix, seven nice-to-have. **Nothing was changed in response yet** beyond correcting stale text in the plan itself. Summary immediately below. PR #3 and PR #4 both merged to `main`. Plan: `docs/planning/part-03-cicd-gitops.md` (design `db4abba`). Branch `feature/gitops-ci-cd`, draft [PR #3](https://github.com/IdanBro/PokeProxy/pull/3) open against `main` as the vehicle for the rest of Part 3. Step 4 is complete: 4a (the `deploy/envs/` move plus the N7 fix) and 4b (prod stand-in cluster on 8081 + Argo CD 10.4.0), both verified live. Step 5 is complete and verified live, including a real branch-protection obstacle found and fixed mid-implementation (classic PR-required rule blocked the promote push; fixed with a fine-grained PAT + `[skip ci]`, see below). Step 6 (rollback workflow, three failure scenarios) is next.
+**Current phase:** **Part 3 — CI/CD & GitOps: steps 1–6 done and verified live; step 7 (issue write-ups) open.** A requirement-by-requirement audit against `README_HOME_ASSIGNMENT.md` on 2026-08-23 traced one hypothetical commit through CI → image publication → desired state → rollout → post-deploy E2E → failure handling → rollback, found 3 blockers / 8 should-fix / 7 nice-to-have (full trace and findings: `docs/planning/part-03-cicd-gitops.md` § "Requirement audit"), all of which were then fixed, merged via [PR #6](https://github.com/IdanBro/PokeProxy/pull/6), and verified live the same day: dev and prod redeployed from scratch with E2E passing in both, the F-2 fix regression-tested, and all three step-6 rollback scenarios (A, B, C) executed against the real prod cluster with captured evidence. PR #3, #4 and #6 all merged to `main`. Plan: `docs/planning/part-03-cicd-gitops.md` (design `db4abba`). Step 4 is complete: 4a (the `deploy/envs/` move plus the N7 fix) and 4b (prod stand-in cluster on 8081 + Argo CD 10.4.0), both verified live. Step 5 is complete and verified live, including a real branch-protection obstacle found and fixed mid-implementation (classic PR-required rule blocked the promote push; fixed with a fine-grained PAT + `[skip ci]`, see below).
 
 **Part 3 requirement audit, 2026-08-23 — three blockers.**
 
@@ -48,6 +48,21 @@ This document is the persistent engineering state for the assignment. I update i
 **`$?` is not trustworthy through this session's `wsl.exe`-piped invocation path** — confirmed independently earlier and it recurred here (a function's `return $ok` reported wrong). Every result above is read from actual resource state (`kubectl get -o jsonpath`, `kubectl logs`) captured in separate, deliberate calls, not from a captured exit code.
 
 **Scenario C — not yet run.** Needs `rollback.yml` and today's should-fix batch to actually exist on GitHub; both are still local-only as of this entry. Landing them (branch + PR, user-approved) immediately follows this entry.
+
+**Landed and verified live, 2026-08-23.** [PR #6](https://github.com/IdanBro/PokeProxy/pull/6) (`fix/part3-audit-blockers`, commit `810d9e0`) pushed and merged by the user (`4d74e37`) — I hit a genuine credential wall pushing it myself (no git credential helper configured in this WSL session; `gh`'s own OAuth token was rejected by GitHub for HTTPS git push with `Invalid username or token`, consistent with why the promote job needs a dedicated fine-grained PAT rather than a bare token) and handed it back rather than writing SSH keys or persisting new git config without asking.
+
+**CI on the merge: 7/7 green**, run [32666613159](https://github.com/IdanBro/PokeProxy/actions/runs/32666613159) — including `Promote`, which is the live proof F-4/F-5 work: `chart-lint` is now a real dependency of `promote`, and `promote`'s own lint-before-commit step passed against real output. Promote wrote `073d78e` (`chore(deploy): promote 4d74e37 [skip ci]`).
+
+**Prod redeployed against the merged state**, digest `sha256:cf31e472…` confirmed on the running pods, E2E passed (`e2e-2270e9c8` delivered). This is the first time F-8 (`activeDeadlineSeconds: 180`) and F-9 (E2E resource requests/limits) have run for real rather than just rendered.
+
+**Scenario C — executed live.** `gh workflow run rollback.yml -f sha=b281080`, run [32666881696](https://github.com/IdanBro/PokeProxy/actions/runs/32666881696), **succeeded**. Verified, not assumed:
+- Commit `9452d0e` (`revert(deploy): roll back to b281080 [skip ci]`) landed directly on `main`, no PR — same push path as `promote`.
+- All six written digests match the `b281080`-era values exactly (`pokeproxy@sha256:ca854026…`, `mock-downstream@sha256:8b9c52cc…`, `pokeproxy-e2e@sha256:3f93394a…`).
+- **No second CI run** — `gh run list` shows only the original merge's `CI` run and the `Rollback` run; `[skip ci]` held under the same PAT-push conditions step 5 already proved this for.
+- `bootstrap-prod.sh` reconciled it: Synced/Healthy, running pod digest `sha256:ca854026…` matches byte-for-byte, PostSync E2E passed (`e2e-af6c6c8f` delivered), and a live probe against `:8081/stream` returned the expected `401` — the app is healthy and serving correctly on the rolled-back version, not merely "Synced" on paper.
+
+**All three Part 3 rollback scenarios are now executed with captured evidence.** DoD item 9 closes.
+
 
 **Blockers and should-fixes from the 2026-08-23 audit — implemented, none verified live yet (no `helm`/`kubeseal` in this shell; needs a real run against `k3d-pokeproxy-prod`).**
 
