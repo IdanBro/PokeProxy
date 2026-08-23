@@ -1,4 +1,5 @@
 {{- $spec := .Values.components.pokeproxy -}}
+{{- if $spec.enabled }}
 {{- $fullname := include "pokeproxy.component.fullname" (dict "context" $ "component" "pokeproxy") }}
 apiVersion: apps/v1
 kind: Deployment
@@ -26,6 +27,7 @@ spec:
     spec:
       serviceAccountName: {{ $fullname }}
       automountServiceAccountToken: false
+      enableServiceLinks: false
       terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
@@ -88,3 +90,4 @@ spec:
             name: {{ $fullname }}-rules
         - name: tmp
           emptyDir: {}
+{{- end }}

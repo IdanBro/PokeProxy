@@ -1,4 +1,5 @@
 {{- $spec := .Values.components.pokeproxy }}
+{{- if $spec.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -13,3 +14,4 @@ spec:
     - name: http
       port: {{ $spec.port }}
       targetPort: http
+{{- end }}

@@ -490,3 +490,17 @@ Factual conversation-flow notes, appended per workstream. What the session focus
 **Cleanup:** both experiments touched live cluster state (a different sealing key, a scratch namespace) — the sealing key and `values-local.yaml` were restored to their original values and the cluster redeployed clean before finishing, so the audit's revision-8 state isn't left divergent by the verification process itself.
 
 **Result:** `scripts/seal-hmac.sh` fixed (3-line change); new `deploy/k8s/namespace.yaml`; write-ups `docs/issues/017-sealed-secret-key-portability.md` and `docs/issues/018-namespace-not-tracked.md`; `WORKLOG.md` and the Part 2 planning doc updated to reflect both as fixed. S1–S4 (should fix) and N1–N6 (nice to have) remain open, unaffected by this session.
+
+### Session 06 — S1/S2/S3 fixes (2026-08-23, same day as the audit and B1/B2 fixes)
+
+**Focus:** fix the three remaining SHOULD FIX chart-hygiene items from the Part 2 audit.
+
+**S1 decision:** the write-up left two options open — gate the templates, or delete the unused `enabled` keys. Deleting them was tempting (pokeproxy and redis aren't really meant to be toggled off), but the `enabled` field is read generically by `serviceaccount.yaml`'s `range` loop over every component — deleting the key would silently break ServiceAccount creation via Helm's nil-is-falsy behavior. Gating the Deployment/Service templates, matching the pattern already fixed for mock-downstream in `721b8fc`, was the correct minimal fix: same bug class, same shape of fix, no ripple into unrelated templates.
+
+**S2 was applied to all three components, not just the one that broke.** The audit only proved the failure on mock-downstream (it has no `envFrom` to mask the injected var), but pokeproxy and redis have the identical exposure — pokeproxy is saved today only by env-precedence luck. Fixed all three rather than just the one caught failing.
+
+**Verification, same standard as the B1/B2 session: reproduce, fix, re-verify live, not just re-read the template.** For S1, rendered the chart with `--set components.redis.enabled=false` before the fix (still produced an orphaned Deployment) and after (zero Redis resources at all). For S2, redeployed live and diffed the mock-downstream pod's environment before/after — `POKEPROXY_PORT=tcp://...` plus four `_TCP_*` variables gone entirely. Ran the full app suite (106 passed, ruff clean) and a signed end-to-end request through the real ingress afterward to confirm the chart changes didn't regress anything already working.
+
+**S3's README was written command-by-command against the live cluster, not drafted from memory of what the steps "should" be.** Each step in `deploy/README.md` — cluster create, build+import at the exact HEAD sha, namespace apply, secret seal, `helm upgrade --atomic`, a verification curl — matches a command already re-run and confirmed working during this and the prior two sessions, including the sha-drift warning learned the hard way in Part 2 steps 6–8.
+
+**Result:** `deploy/helm/pokeproxy/templates/pokeproxy/{deployment,service}.yaml`, `redis/{deployment,service}.yaml` gated on `enabled`; `enableServiceLinks: false` added to all three Deployments' pod specs; new `deploy/README.md`. `WORKLOG.md` and the Part 2 planning doc updated to mark S1–S3 fixed. S4 and N1–N6 remain open, untouched by this session. Stopped here per instruction, for review.

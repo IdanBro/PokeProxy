@@ -1,4 +1,5 @@
 {{- $spec := .Values.components.redis }}
+{{- if $spec.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -13,3 +14,4 @@ spec:
     - name: redis
       port: {{ $spec.port }}
       targetPort: redis
+{{- end }}
