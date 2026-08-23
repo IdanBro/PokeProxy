@@ -1,7 +1,9 @@
 # B1 — Committed sealed-secret ciphertext didn't survive a fresh clone
 
-**Severity:** Blocker · **Part:** 2 audit (2026-08-23) · **Status:** Fixed
+**Severity:** Blocker · **Part:** 2 audit (2026-08-23) · **Status:** Fixed, mechanism superseded — see below
 **Files:** `scripts/seal-hmac.sh`
+
+> **Superseded, 2026-08-23 (`docs/issues/023-sealing-key-silent-generation.md`).** The fix below — re-seal unconditionally whenever `generate_sealing_key()` ran — was correct for Part 2's single-machine dev flow, but became the direct mechanism of a worse, GitOps-specific failure once a second party (Argo CD, reading from git) could disagree with the local working tree about which ciphertext is current. `generate_sealing_key()` no longer exists in `seal-hmac.sh`; key provisioning moved to a separate, explicit, one-time script (`scripts/init-sealing-key.sh`), and a missing key now fails loudly instead of triggering an automatic re-seal. This document is kept for the historical record of what shipped and why at the time.
 
 ## Problem
 
