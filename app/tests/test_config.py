@@ -190,7 +190,3 @@ def test_accepts_attempt_timeout_strictly_less_than_deadline(
     monkeypatch.setenv("FORWARD_DEADLINE_SECONDS", "10.0")
     settings = _build(pokeproxy_hmac_key=DEV_SECRET_B64)
     assert settings.forward_attempt_timeout_seconds == 3.0
-
-
-def test_scratch_prove_ci_goes_red():
-    assert False, "scratch commit for CI step-1 verification, to be reverted"
