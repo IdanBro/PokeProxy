@@ -61,7 +61,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: sha
-        run: echo "short=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+        run: |
+          full="${{ github.event.pull_request.head.sha || github.sha }}"
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+          echo "short=${full:0:7}" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -76,7 +79,7 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ghcr.io/idanbro/pokeproxy:${{ steps.sha.outputs.short }}
-          build-args: GIT_SHA=${{ github.sha }}
+          build-args: GIT_SHA=${{ steps.sha.outputs.full }}
           sbom: true
           provenance: mode=max
           cache-from: type=gha,scope=pokeproxy
@@ -104,7 +107,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: sha
-        run: echo "short=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+        run: |
+          full="${{ github.event.pull_request.head.sha || github.sha }}"
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+          echo "short=${full:0:7}" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -119,7 +125,7 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ghcr.io/idanbro/mock-downstream:${{ steps.sha.outputs.short }}
-          build-args: GIT_SHA=${{ github.sha }}
+          build-args: GIT_SHA=${{ steps.sha.outputs.full }}
           sbom: true
           provenance: mode=max
           cache-from: type=gha,scope=mock-downstream
