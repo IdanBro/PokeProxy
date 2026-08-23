@@ -6,7 +6,7 @@ This document is the persistent engineering state for the assignment. I update i
 
 ## Current State
 
-**Current phase:** **Part 3 — CI/CD & GitOps: designed and agreed on 2026-08-23, no implementation yet.** The full plan — final pipeline, nine decisions, seven ordered steps, repository layout, verification and rollback model — is `docs/planning/part-03-cicd-gitops.md`. Branch `feature/gitops-ci-cd`, working tree clean at `d181de7`. Nothing under `.github/` exists yet. Step 1 (CI lint + test) is next and awaits approval.
+**Current phase:** **Part 3 — CI/CD & GitOps: designed, reviewed against senior practice, and agreed on 2026-08-23. No implementation yet.** The full plan — final pipeline, eleven decisions, seven ordered steps, repository layout, verification and rollback model — is `docs/planning/part-03-cicd-gitops.md`. Branch `feature/gitops-ci-cd`, design committed at `db4abba`. Nothing under `.github/` exists yet. Step 1 (CI lint + test + Dependabot) is next.
 
 **Part 2 — Infrastructure & Deployment: complete and re-audited at HEAD `cd72953` on 2026-08-23. No blockers. S5 and S6 fixed same-day and verified live; S4 plus eight NICE TO HAVE remain open.** PokeProxy, Redis, and mock-downstream run in a real k3d cluster, reachable through a real ingress, with secrets sealed, network policy enforced, rollouts proven safe under live load, and every fixed issue documented with a write-up. Design and decisions are recorded in `docs/planning/part-02-infrastructure-deployment.md`; the Part 2 section below carries the day-by-day narrative and measured results, and that file's two audit sections — **"Part 2 completion audit — 2026-08-23"** and **"Part 2 re-audit at HEAD `cd72953` — 2026-08-23"** — carry the full evidence. Part 1 remains functionally complete (detail retained below).
 
@@ -165,11 +165,11 @@ Items discovered during the Part 1 review that intentionally belong to a later P
 | S1 | Should fix | `components.{pokeproxy,redis}.enabled` declared but never read — renders a Deployment whose ServiceAccount is never created | Gated `pokeproxy/{deployment,service}.yaml` and `redis/{deployment,service}.yaml` on `$spec.enabled`, matching the pattern already fixed for mock-downstream | **Fixed** |
 | S2 | Should fix | `enableServiceLinks` default-true injects `POKEPROXY_PORT=tcp://…` into every pod; only env precedence saves pokeproxy | `enableServiceLinks: false` added to all three pod specs | **Fixed** |
 | S3 | Should fix | No runnable deploy procedure and no top-level README (deliverable 8) | New `deploy/README.md` — every command in it re-run against the live cluster while writing it | **Fixed** |
-| S4 | Should fix | `values-prod.yaml` renders rules pointing at the mock Service it disables — **and** `allow-pokeproxy-egress-to-dependencies` blocks egress to any real external downstream, so it is undeployable on two counts | `fail` at render time for the URL half; a values-driven egress block (CIDR / namespace selector) for the other | Open — re-confirmed in the 2026-08-23 re-audit |
+| S4 | Should fix | `values-prod.yaml` renders rules pointing at the mock Service it disables — **and** `allow-pokeproxy-egress-to-dependencies` blocks egress to any real external downstream, so it is undeployable on two counts | Superseded: `deploy/envs/prod/values.yaml` describes an environment that actually exists (mock enabled, Traefik, GHCR digests); the external-downstream delta becomes prose in `deploy/README.md` | Open — **scheduled for Part 3 step 4** |
 | S5 | Should fix | `scripts/deploy.sh` and `scripts/seal-hmac.sh` never pinned a kube context; `k3d cluster list` is context-independent (exit 0 under both contexts on this machine), so the reuse path could `kubectl apply` / `helm upgrade` — and apply an RSA private key to `kube-system` — against the wrong cluster | `KUBE_CONTEXT` defaulting to `k3d-$CLUSTER_NAME`, threaded onto every cluster-touching call, plus a loud existence check | **Fixed** — `docs/issues/019-deploy-scripts-unpinned-kube-context.md` |
 | S6 | Should fix | S1's `enabled` fix was incomplete: with `components.pokeproxy.enabled=false` the chart still rendered both ConfigMaps, the SealedSecret, the Ingress and the Middleware. The Ingress backed onto a Service that was never created, so Traefik answered 503 | Gated all five on `components.pokeproxy.enabled`; NetworkPolicies deliberately left (provably inert). Renders byte-identical for both existing values files | **Fixed** — `docs/issues/020-pokeproxy-enabled-flag-incomplete.md` |
 | N1–N6 | Nice to have | mock port hardcoded in the image · no PDB/anti-affinity · Redis unauthenticated · R2 traceback noise breaks one-JSON-per-line · tags not digest-pinned · `preStop.sleep` needs K8s ≥1.30 | see the audit section |
-| N7 | Nice to have | `scripts/seal-hmac.sh:96` rewrites `values-local.yaml` wholesale with `cat >`, discarding anything else in the file | Merge, or narrow the write to the `hmac:` key | Open — found 2026-08-23 re-audit |
+| N7 | Nice to have | `scripts/seal-hmac.sh:96` rewrites `values-local.yaml` wholesale with `cat >`, discarding anything else in the file | Merge, or narrow the write to the `hmac:` key — via yq | Open — **promoted to mandatory in Part 3 step 4**: the target file will hold image tags and digests, so a wholesale `cat >` becomes data loss |
 | N8 | Nice to have | `deploy/README.md:44` says re-sealing happens on a "fresh clone or fresh cluster"; a fresh cluster with the key still on disk correctly does not re-seal | One-word doc fix | Open — found 2026-08-23 re-audit |
 
 **Part 2 — Infrastructure & Deployment**
@@ -195,6 +195,11 @@ Items discovered during the Part 1 review that intentionally belong to a later P
 - **Argo CD admin credentials need a handling decision** — the bootstrap prints the generated password; that is fine for a laptop stand-in and not fine for anything real.
 - **Base images are still tag-pinned, not digest-pinned** (N5). Part 3 makes *our* images digest-pinned, which sharpens rather than solves this: a build re-run can still produce different bytes for the same commit because the base moved.
 - **Deferred by decision, not oversight: an ephemeral k3d cluster inside the CI runner** as a pre-promotion gate. It is additive — the E2E is already a URL-parameterised Job — so adding it later is a workflow job, not a redesign.
+- **Poisoned cache survives a rollback for up to `CACHE_TTL_SECONDS` (300).** Cached downstream responses are keyed by payload hash, so a bad version's wrong response replays after the rollback lands, for previously-seen payloads only. `redis-cli FLUSHALL` is the optional rollback step; documented in the Part 3 plan's rollback section.
+- **GHCR has no retention policy.** Three images per commit, forever. Fine at this scale, wrong at any real one.
+- **Argo CD is not itself GitOps-managed** — `bootstrap-prod.sh` installs it imperatively. App-of-apps is the standard answer to "who watches the watcher"; deliberately out of scope, recorded because it's the expected follow-up question.
+- **The E2E Job mounts the real HMAC signing key.** The app validates against a single key, so a dedicated test credential needs a protocol change (M3). Accepted; blast radius is a Job in the namespace that already holds the Secret.
+- **`ruff format` is not gated** (D8). If it's ever adopted, the sweep needs a `.git-blame-ignore-revs` entry.
 
 **Part 4 — Observability**
 - Replace `/stats` with Prometheus instrumentation, reusing the Part 1 outcome-accounting seam (H4, H5).
@@ -581,7 +586,7 @@ No Python changed.
 
 **Design agreed 2026-08-23. No implementation yet.** Full reasoning, alternatives, step detail and the verification/rollback model: `docs/planning/part-03-cicd-gitops.md`. Only decisions and measured results go here.
 
-**Stack:** GitHub Actions (lint · test · build · promote, never touching a cluster) · GHCR with short-sha tags **and** digest pinning · Argo CD reconciling `main` into a second k3d cluster · a PostSync Job sending real protobuf + HMAC through Traefik and asserting the mock downstream received it · rollback by git revert via a `workflow_dispatch` workflow.
+**Stack:** GitHub Actions (lint · test · build · scan · sign · promote, never touching a cluster) · GHCR with short-sha tags **and** digest pinning, SBOM + SLSA provenance, Trivy gating HIGH/CRITICAL, cosign keyless signing · Argo CD reconciling `main` into a second k3d cluster from `deploy/envs/prod/values.yaml` · a PostSync Job sending real protobuf + HMAC through Traefik and asserting the mock downstream received it · rollback by git revert via a `workflow_dispatch` workflow.
 
 **The constraint that decided the architecture:** GitHub-hosted runners cannot reach a cluster on this laptop. Any design where CI runs `kubectl`/`helm` against the target needs a self-hosted runner here, which is CI mutating the cluster behind git's back. A pull-based agent in the cluster isn't a preference — it's the only thing that connects cloud CI to this cluster.
 
@@ -591,21 +596,31 @@ No Python changed.
 - **Short-sha tags** kept over my full-sha proposal, for consistency with `deploy.sh` and Part 2's artifacts. Digest pinning kept alongside after I made the case that a git sha makes a tag *unique*, not *immutable* — a build re-run against a moved `python:3.13-slim-bookworm` base (N5) republishes different bytes under the same tag, and `IfNotPresent` then leaves different nodes on different builds.
 - **Argo CD Notifications auto-revert documented, not built.** A flaky E2E would otherwise become an automatic production change.
 
-**A decision reversed mid-planning, after it was already agreed.** Deleting `values-prod.yaml` (S4) was agreed. Detailing step 4 then turned up that Argo CD rejects Helm `valueFiles` resolving outside the Application's `path`, which kills the proposed `deploy/envs/` layout unless a multi-source Application is added. So values files stay inside the chart and `values-prod.yaml` is **rewritten** as the GitOps desired state instead of deleted — same outcome for S4, less churn. Called out explicitly rather than quietly swapped, since it changes an already-agreed decision.
+**A claim I made, then checked, then had to retract.** An intermediate draft moved env values *into* the chart directory and kept `values-prod.yaml` by rewriting it, justified by "Argo CD rejects Helm `valueFiles` resolving outside the Application's `path`." **That was wrong.** The real boundary is the **repository root**, not the app path — a single-source Application accepts `../../envs/prod/values.yaml` fine; only escaping the repo root, including via a symlink, is rejected. Multi-source with `$values` exists for values in a *different repo*, which is not our case. So the original decision stands: values move to `deploy/envs/{local,prod}/values.yaml` and `values-prod.yaml` is deleted. The dev path is unaffected — `helm -f` has never required a values file inside the chart, so `deploy.sh` and `seal-hmac.sh` each change one path.
+
+**A trap avoided by checking rather than assuming.** Argo CD maps `helm.sh/hook: post-install,post-upgrade` to `PostSync`, and **ignores all Helm hooks entirely once any Argo hook annotation is present** — so the planned dual annotation yields exactly one execution per path, never two. More importantly: `helm.sh/hook: test` has **no Argo CD equivalent and is skipped**. `helm test` is the natural-looking idiom for "verify the release works" and it would have silently never run in prod. The plan's `post-install,post-upgrade` choice is now deliberate rather than lucky.
+
+**Best-practice review pass (2026-08-23), six gaps folded in.** Image vulnerability scanning (Trivy, HIGH/CRITICAL, `ignore-unfixed`), SBOM + SLSA provenance from buildx, Dependabot for `github-actions` and `docker` (digest-pinned bases are unmaintainable without a bot — that trades drift for staleness, it doesn't fix it), branch protection on `main` requiring the CI checks, `ttlSecondsAfterFinished` on the E2E Job, and a bounded `retry.limit` on the Argo Application so `selfHeal` plus a persistently failing PostSync hook can't re-sync forever. Also added: cosign keyless signing via GitHub OIDC, and a `production` GitHub Environment on the promote job for the deployment audit trail.
+
+**A real subtlety the review surfaced about rollback.** Rollback is a pure image swap — no database, no migrations, Redis is a best-effort cache the service already degrades past. **But** the cache stores downstream *responses* keyed by payload hash with `CACHE_TTL_SECONDS=300`, so a poisoned entry written by a bad version replays for up to five minutes *after* the rollback lands. Rollback fixes new payloads instantly and previously-seen ones only after the TTL. `redis-cli FLUSHALL` goes in the rollback runbook as an optional step. This is the same trap that made a Part 2 step 9 revert look like it had failed when it had actually worked.
+
+**Corrected my own reasoning on `ruff format`.** I'd justified skipping it with "a formatting sweep would bury real history" — but `.git-blame-ignore-revs` is the standard remedy and I should have said so. Still skipping it, on the honest grounds: scope, and a 13-file formatting diff is noise in a submission a human reads.
 
 **Verified before the plan was written, so it doesn't rest on assumptions:**
 
 | Check | Result |
 |---|---|
 | Traefik Service | `traefik.kube-system`, `80:32637/TCP` — gives the E2E its in-cluster URL |
-| `main` branch protection | none (`404 Branch not protected`) — the promote job can push directly |
+| `main` branch protection | none at design time; **being enabled** (D11), so the promote job needs a documented bot bypass |
+| Argo CD `valueFiles` scope | bounded by the **repo root**, not the Application `path` — `../../envs/prod/values.yaml` is valid single-source |
+| Argo CD Helm hooks | `post-install`/`post-upgrade` map to `PostSync`; any Argo hook annotation suppresses *all* Helm hooks; `helm.sh/hook: test` is skipped entirely |
 | Docker server arch | `amd64` — single-platform builds |
 | `git rev-parse --short HEAD` | **7 chars**, so CI's `${GITHUB_SHA:0:7}` and `deploy.sh` agree |
 | Is the downstream forward synchronous? | **yes** — `proxy.py:123` awaits the forward before responding, so the E2E has no polling race |
 | `ruff format --check` | would reformat **13 of 27** files → deliberately not added to CI |
 | Repo visibility | PUBLIC → GHCR packages can be public, cluster pulls anonymously |
 
-**Seven ordered steps:** (1) CI lint+test · (2) CI build+push to GHCR · (3) **E2E script, derived image, hook Job, 3 NetworkPolicy rules — proven on the existing dev cluster** · (4) prod cluster + Argo CD + rewritten `values-prod.yaml` · (5) CI promote, measure commit→serving · (6) `rollback.yml` and all three failure scenarios executed · (7) write-ups and docs.
+**Seven ordered steps:** (1) CI lint+test + Dependabot · (2) CI build+push to GHCR with SBOM/provenance, Trivy scan, cosign signing · (3) **E2E script, derived image, hook Job, 3 NetworkPolicy rules — proven on the existing dev cluster** · (4) prod cluster + Argo CD + the `deploy/envs/` move · (5) CI promote with the `production` Environment, measure commit→serving · (6) `rollback.yml` and all three failure scenarios executed · (7) write-ups and docs.
 
 Step 3 precedes step 4 on purpose: it's the highest-value and highest-risk piece, it's fully provable on the cluster that already exists, and it stands alone even if the prod cluster never happens.
 
