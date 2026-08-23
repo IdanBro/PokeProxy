@@ -61,8 +61,10 @@ helm upgrade --install pokeproxy deploy/helm/pokeproxy \
 
 ```bash
 kubectl get pods -n pokeproxy
-curl -i http://localhost:8080/stream   # expect 401 — no signature on this plain request
+curl -i -X POST http://localhost:8080/stream   # expect 401 — no signature on this plain request
 ```
+
+`/stream` is a POST-only route — a bare `curl -i http://localhost:8080/stream` sends a GET and returns **405**, not 401. Use `-X POST` for the intended check.
 
 For a real signed request, `app/scripts/load_generator.py` builds valid protobuf + HMAC payloads:
 

@@ -504,3 +504,13 @@ Factual conversation-flow notes, appended per workstream. What the session focus
 **S3's README was written command-by-command against the live cluster, not drafted from memory of what the steps "should" be.** Each step in `deploy/README.md` — cluster create, build+import at the exact HEAD sha, namespace apply, secret seal, `helm upgrade --atomic`, a verification curl — matches a command already re-run and confirmed working during this and the prior two sessions, including the sha-drift warning learned the hard way in Part 2 steps 6–8.
 
 **Result:** `deploy/helm/pokeproxy/templates/pokeproxy/{deployment,service}.yaml`, `redis/{deployment,service}.yaml` gated on `enabled`; `enableServiceLinks: false` added to all three Deployments' pod specs; new `deploy/README.md`. `WORKLOG.md` and the Part 2 planning doc updated to mark S1–S3 fixed. S4 and N1–N6 remain open, untouched by this session. Stopped here per instruction, for review.
+
+### Session 07 — scripts/deploy.sh (2026-08-23)
+
+**Focus:** turn `deploy/README.md`'s manual steps into a single runnable, idempotent script, as asked.
+
+**Running it caught a real bug in the README that reading it never would have.** The documented verify command, `curl -i http://localhost:8080/stream`, sends a bare GET — but `/stream` is POST-only, so it returns **405**, not the 401 the README claimed. That line had never actually been executed as written; it was transcribed from what the app-level behavior *should* look like rather than run against the ingress. The script's verify step (built to assert on the status code, not just print it) failed loudly on first run and surfaced this immediately. Fixed both the script and the README to use `-X POST`, then re-ran twice to confirm: two consecutive full runs against the live cluster, revisions 12 and 13, both `4/4 pods Ready, 0 restarts`, both a genuine `401`.
+
+**Idempotency was designed in, not bolted on.** `k3d cluster list <name>` before creating (reuse if it exists), `kubectl apply` for the namespace (already idempotent), `seal-hmac.sh` unchanged (already fixed to be idempotent in the B1 session), `helm upgrade --install --atomic` (idempotent by construction). The second `deploy.sh` run confirmed all of these held: cluster reused, namespace `unchanged`, sealing key and ciphertext both left untouched, only the Helm revision incremented.
+
+**Result:** new `scripts/deploy.sh`; one-line fix to `deploy/README.md`'s verify step. `WORKLOG.md` updated. No chart or app code touched.
