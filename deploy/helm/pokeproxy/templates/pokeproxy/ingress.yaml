@@ -1,0 +1,31 @@
+{{- if .Values.ingress.enabled }}
+{{- $fullname := include "pokeproxy.component.fullname" (dict "context" $ "component" "pokeproxy") }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pokeproxy.component.labels" (dict "context" $ "component" "pokeproxy") | nindent 4 }}
+  {{- with .Values.ingress.bodyLimit }}
+  {{- if and .enabled (eq .provider "traefik") }}
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: {{ $.Release.Namespace }}-body-limit@kubernetescrd
+  {{- else if and .enabled (eq .provider "nginx") }}
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: {{ printf "%dm" (div (.maxBytes | int) 1048576) | quote }}
+  {{- end }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - http:
+        paths:
+          - path: /stream
+            pathType: Exact
+            backend:
+              service:
+                name: {{ $fullname }}
+                port:
+                  number: {{ .Values.components.pokeproxy.port }}
+{{- end }}

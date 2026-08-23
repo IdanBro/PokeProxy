@@ -1,6 +1,17 @@
 hmac:
   encryptedValue: CHANGEME
 
+ingress:
+  enabled: true
+  className: traefik
+  bodyLimit:
+    enabled: true
+    maxBytes: 1048576
+    provider: traefik
+
+networkPolicy:
+  enabled: true
+
 components:
   pokeproxy:
     enabled: true
@@ -15,7 +26,7 @@ components:
     probes:
       startup:
         periodSeconds: 1
-        failureThreshold: 30
+        failureThreshold: 60
       liveness:
         path: /health
         periodSeconds: 10
@@ -61,7 +72,7 @@ components:
     probes:
       startup:
         periodSeconds: 1
-        failureThreshold: 30
+        failureThreshold: 60
       liveness:
         path: /health
         periodSeconds: 10
@@ -93,7 +104,7 @@ components:
     probes:
       startup:
         periodSeconds: 1
-        failureThreshold: 30
+        failureThreshold: 60
       liveness:
         periodSeconds: 10
         timeoutSeconds: 2

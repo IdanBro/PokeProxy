@@ -6,7 +6,7 @@ This document is the persistent engineering state for the assignment. I update i
 
 ## Current State
 
-**Current phase:** **Part 2 — Infrastructure & Deployment, steps 1–7 of 10 done.** A real k3d cluster is running with the full stack deployed, secrets handled via Sealed Secrets, and the design proven by an actual cluster delete + recreate cycle — not just asserted. Design agreed and recorded in `docs/planning/part-02-infrastructure-deployment.md`; the Part 2 section below carries decisions and measured results. Branch `feature/infra-and-deployment`. Part 1 is functionally complete (detail retained below).
+**Current phase:** **Part 2 — Infrastructure & Deployment, steps 1–8 of 10 done.** A real k3d cluster is running, reachable from the host through Traefik, with secrets, ingress, and network policy all live and verified — not just rendered. Design agreed and recorded in `docs/planning/part-02-infrastructure-deployment.md`; the Part 2 section below carries decisions and measured results. Branch `feature/infra-and-deployment`. Part 1 is functionally complete (detail retained below).
 
 **Part 1 (complete) — both final-audit SHOULD FIX findings closed.** R1 (retry attempt-timeout, `docs/issues/012-retry-attempt-timeout.md`) and D1 (consolidated known-gaps write-up, `docs/issues/000-known-gaps.md`) are fixed. 15 issue IDs now fixed across 12 changes, 13 write-ups, **101 tests** passing from `app/` and the repo root, `ruff` clean. R2, R3, R4 (nice to have, from the same audit) and the pre-existing NICE TO HAVE backlog (L1, L2, L5, M6, H6) remain open, tracked in `docs/issues/000-known-gaps.md`. Part 1 is functionally complete; Part 2 not started.
 
@@ -28,8 +28,8 @@ This document is the persistent engineering state for the assignment. I update i
 - **Wave 5 (M7-CWD) — test suite no longer depends on the invoking shell's working directory.** New `app/tests/conftest.py` pins CWD to `app/` via `pytest_configure()`, computed from the test files' own location. Verified from three different working directories (`app/`, repo root, `/tmp`) — 94/94 every time. Write-up: `docs/issues/011-test-suite-cwd-dependence.md`.
 
 **Currently working on:**
-- Part 2, stopped after step 7 (Sealed Secrets) for review before step 8. R2, R3 and the pre-existing NICE TO HAVE items are open and tracked in `docs/issues/000-known-gaps.md`. **H6 and H7's cluster-side half are fully closed and live-verified.**
-- **Local environment state:** k3d cluster `pokeproxy` is running (recreated fresh during step 7's verification) with the full stack deployed via `helm upgrade --install -f values-local.yaml`, healthy, `pokeproxy-hmac` now provisioned by the real Sealed Secrets controller — no manual secret creation remaining. `kubectl`/`k3d`/`kubeseal` installed in WSL at `~/.local/bin`. `.secrets/sealing-key.yaml` (gitignored) holds the pinned sealing keypair; `deploy/helm/pokeproxy/values-local.yaml` (committed) holds the sealed HMAC ciphertext.
+- Part 2, stopped after step 8 (Ingress + NetworkPolicy) for review before step 9. R2, R3 and the pre-existing NICE TO HAVE items are open and tracked in `docs/issues/000-known-gaps.md`. **M2's ingress half and M5's partial mitigation are closed and live-verified.**
+- **Local environment state:** k3d cluster `pokeproxy` running with `8080:80@loadbalancer` port-mapped to the host, full stack deployed via `helm upgrade --install -f values-local.yaml`, healthy, reachable at `http://localhost:8080/stream`. `deploy/k3d/cluster.yaml` now carries that port mapping. `kubectl`/`k3d`/`kubeseal` installed in WSL at `~/.local/bin`. `.secrets/sealing-key.yaml` (gitignored) holds the pinned sealing keypair; `deploy/helm/pokeproxy/values-local.yaml` (committed) holds the sealed HMAC ciphertext.
 
 **New standing rule (2026-08-23), added to `CLAUDE.md`:** write self-explanatory code with no comments (SOLID where the code has real structure to benefit — not forced onto trivial code); when a change makes existing code or tests obsolete, remove them as part of that change instead of leaving dead weight, scoped to what the current change touches. Applied immediately in step 3 — see below.
 
@@ -46,7 +46,7 @@ This document is the persistent engineering state for the assignment. I update i
 **Why M2 deferred rather than fixed:** user's explicit call, consistent with the H5 percentile-removal precedent — this class of protection is also achievable at the ingress/reverse-proxy layer in Part 2 (e.g., an Ingress `client_max_body_size`-equivalent), which is the more standard place production systems put it and rejects before the request even reaches this process. Recorded as a Part 2 addition below (defense-in-depth, not a replacement for the app-level fix, which stays scoped and ready if picked back up first).
 
 **Next:**
-1. Part 2 step 8 — Ingress + Traefik body-cap Middleware (M2, defense-in-depth) + NetworkPolicy (default-deny + explicit allows). This is where Traefik, already running idle in the cluster since step 6, finally gets wired to something. Pending review of step 7.
+1. Part 2 step 9 — rollout / termination / measurement pass: rolling restart under live load (zero dropped requests), confirm a rules values edit actually triggers a rollout on a live `helm upgrade` (mechanics already proven in step 5, not yet proven live), and replace the provisional resource requests/limits with real `kubectl top` numbers under the load generator. Pending review of step 8.
 2. Remaining NICE TO HAVE items (L1, L2, L5, R2, R3) stay tracked in `docs/issues/000-known-gaps.md` and don't block Part 2.
 
 **R1 — per-attempt HTTP timeout now less than the retry deadline (final audit fix).** `Settings.forward_attempt_timeout_seconds` (`FORWARD_ATTEMPT_TIMEOUT_SECONDS`, default 3.0) replaces the hardcoded `read=10.0`/`write=10.0` in the shared `httpx.AsyncClient`, which previously equalled `FORWARD_DEADLINE_SECONDS` and let one slow attempt consume the whole retry budget. New `Settings.model_validator` rejects `attempt_timeout >= deadline` at startup by name, so the exact bug can't be reintroduced via misconfiguration. `main.py` gained `_build_http_client(settings)` so the client construction is independently testable. Live re-probe against the same black-hole socket used in the audit: **3 of 3 attempts in 9.70s**, was 1 of 3 in 10.17s. New `test_retry_timeout.py` uses a real TCP server (a custom `httpx` transport bypasses timeout enforcement entirely) — surfaced that Python 3.13's `asyncio.Server.wait_closed()` also waits for already-accepted connections' handlers to finish, so the test's hung-server fixture cancels its handler tasks explicitly rather than waiting on them. 7 new tests (94 → 101): 5 in `test_config.py`, 2 in `test_retry_timeout.py`. `ruff check .` clean. Full detail in `docs/issues/012-retry-attempt-timeout.md`.
@@ -440,6 +440,34 @@ Verified by execution:
 | `pokeproxy-hmac` Secret ownership | `ownerReferences` points at the `SealedSecret` CR, `controller: true` |
 
 **Not yet verified, explicitly out of scope:** a genuinely fresh clone with no local `.secrets/` at all (documented, accepted trade-off — generates a new key and reseals); `values-prod.yaml`'s equivalent (step 10, no production cluster to seal against).
+
+No Python changed.
+
+**Step 8 (Ingress + NetworkPolicy) — done 2026-08-23.** Traefik, idle since step 6, finally wired up. New `templates/pokeproxy/{ingress,traefik-middleware}.yaml` and `templates/networkpolicy.yaml`, values-gated. `deploy/k3d/cluster.yaml` gained `8080:80@loadbalancer` (k3d port mappings are cluster-creation-time only, so this meant a full recreate — cheap and safe now, per step 7's proof).
+
+**Ingress exposes only `/stream`**, no rules for `/health`/`/ready`/`/stats` — they 404 at the edge, closing the M5 partial mitigation without needing an explicit deny.
+
+**M2 proven to be the actual rejecting layer, not coincidentally agreeing with the app's own check.** A >1 MiB request returns 413 with Traefik's plain-text body (`Request Entity Too Large`, not the app's `{"error": ...}` JSON), and the app's own access log shows **zero trace of the request** — it never left the edge. A bare 413 alone would have been ambiguous between the new Middleware and the app's pre-existing `MAX_BODY_SIZE` check; this distinguishes them.
+
+**Real templating bug, caught before the cluster saw it:** `maxRequestBodyBytes` rendered as `1.048576e+06` — Helm decodes YAML numbers as `float64`, and Go's default float formatting picks scientific notation for round values. Fixed with `| int`. General Helm/Sprig gotcha, not specific to this field — worth remembering for any future numeric value read from `values.yaml`.
+
+**Two genuinely uncertain things about k3s, both tested rather than assumed:**
+- Does k3s's default NetworkPolicy controller enforce anything? Proven with a real A/B: an unlabeled, PSA-compliant `busybox` pod resolved `pokeproxy-redis`'s DNS in 0.09s but failed TCP to both redis and mock-downstream (~1s, exit 1) every time; the actual pokeproxy pod connected to redis in 89ms on the same policy set. Same target, different pod identity, different outcome.
+- Does kubelet probe traffic get blocked by a default-deny ingress policy? No explicit allow exists for it anywhere in the templates, yet `helm upgrade --install --wait` succeeded with all 4 pods reaching Ready — k3s doesn't subject node-originated probe traffic to pod-to-pod policy enforcement.
+
+**Incidental proof of a step-4 claim that was still unverified:** the first attempt to create the plain debug pod was rejected outright by the API server — `violates PodSecurity "restricted:latest": allowPrivilegeEscalation != false, ...runAsNonRoot != true...`. Exactly the "apply a non-compliant pod, confirm PSA rejects it" check the original plan called for, arriving as a side effect.
+
+**A third occurrence of the step-6 probe-timing bug class, fixed more broadly this time.** `mock-downstream` failed its `startupProbe` and restarted once on this fully-fresh cluster — likely more scheduling contention than step 6 had (sealed-secrets controller + all 4 app pods at once, on a cold node). Since pokeproxy didn't flake this run but mock-downstream did, and nothing guarantees the same workload flakes next time, widened `startupProbe.failureThreshold` 30→60 for **all three workloads symmetrically**, not just the one that happened to fail. Redeployed: zero restarts across all 4 pods.
+
+Verified by execution, all five step-8 bullets:
+
+| Check | Result |
+|---|---|
+| Signed request from the host through the ingress | `200 {"status":"received"}` via `http://localhost:8080/stream`, no port-forward |
+| >1 MiB rejected at the edge | `413`, Traefik's own error text, zero trace in the app's access log |
+| `/stats`/`/health`/`/ready` not reachable via ingress | `404` for all three |
+| proxy→redis allowed, everything else denied | Unlabeled pod: DNS resolves, TCP fails to both redis and mock-downstream. Pokeproxy pod: TCP to redis succeeds in 89ms |
+| DNS still resolves | Confirmed via the unlabeled pod's `nslookup` and every successful forward this step |
 
 No Python changed.
 

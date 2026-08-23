@@ -71,7 +71,7 @@ The general rule "don't hand-roll infrastructure" is right, and for anything sta
 | 5 | Workload templates: redis, mock, pokeproxy — probes, resources, securityContext, `checksum/config`, rules via `toJson` (H6, H7) | **Done** |
 | 6 | k3d cluster definition, `k3d image import`, first `helm upgrade --install` | **Done** |
 | 7 | Sealed Secrets: controller, pinned sealing key, `seal-hmac.sh` | **Done** |
-| 8 | Ingress + Traefik body cap (M2) + NetworkPolicy | Not started |
+| 8 | Ingress + Traefik body cap (M2) + NetworkPolicy | **Done** |
 | 9 | Rollout / termination / measurement pass | Not started |
 | 10 | `values-prod.yaml` + issue write-ups + WORKLOG | Not started |
 
@@ -345,5 +345,41 @@ Verified by execution:
 | `kubectl get secret pokeproxy-hmac -o jsonpath='{.metadata.ownerReferences}'` | Owned by the `SealedSecret` CR, `controller: true` |
 
 **Not yet verified — explicitly out of scope here:** whether `seal-hmac.sh` correctly handles a *genuinely* fresh clone (no `.secrets/` at all) — that path generates a new key and reseals, which is the documented, accepted trade-off, but wasn't exercised this session since `.secrets/` already existed throughout. `values-prod.yaml`'s equivalent secret story (step 10) is intentionally out of scope — no production cluster exists to seal against.
+
+No Python changed.
+
+## Step 8 — result
+
+Traefik, running idle since step 6, is finally wired to something. New `templates/pokeproxy/ingress.yaml`, `templates/pokeproxy/traefik-middleware.yaml`, and `templates/networkpolicy.yaml`, all values-gated (`ingress.enabled`, `ingress.bodyLimit.*`, `networkPolicy.enabled`).
+
+**Ingress exposes only `/stream`**, `pathType: Exact`, no host restriction (fine for local — Traefik routes any Host header to the one declared rule). `/health`, `/ready`, `/stats` were never given a rule, so they 404 at the edge rather than needing an explicit deny — the simplest correct mechanism, and the M5 partial mitigation the design committed to.
+
+**M2 defense-in-depth, and proven to actually be the layer that rejects, not just coincidentally agreeing with the app's own check.** A >1 MiB request through the ingress returns `413`, but the *interesting* proof is in the response body and the app's own logs: the body is Traefik's plain-text `Request Entity Too Large`, not the app's `{"error": "payload too large"}` JSON, and `pokeproxy`'s access log shows **zero trace of the request** — it never reached the pod. Without that check, a `413` alone would have been ambiguous between "Traefik caught it" and "the app's pre-existing `MAX_BODY_SIZE` check caught it after all," which would have proven nothing about the new Middleware. The `provider: traefik | nginx` values switch (unexercised here, no ingress-nginx in this cluster) keeps `values-prod.yaml` free to use `nginx.ingress.kubernetes.io/proxy-body-size` instead without touching the template.
+
+**A real templating bug, caught before it reached the cluster:** `maxRequestBodyBytes` rendered as `1.048576e+06` — Helm decodes YAML numbers as `float64` internally, and Go's default float formatting picks scientific notation for round numbers like `1048576.0`. Valid JSON, and Kubernetes' JSON unmarshaling into an `int64` field would likely have accepted it, but that's relying on unstated leniency rather than an intended contract. Fixed with an explicit `| int` cast in both the Traefik and (unexercised) nginx branches. Worth knowing about for every other numeric value read from `values.yaml` in this or any future Helm chart — it's a Helm/Sprig-wide behavior, not specific to this field.
+
+**NetworkPolicy: default-deny-all + five explicit allows** (DNS egress to `kube-system`, ingress-from-`kube-system` to pokeproxy on 8000 for Traefik, pokeproxy's own egress to redis/mock-downstream, and matching ingress allows on redis and mock-downstream scoped to pods carrying the pokeproxy selector labels). Redis staying unauthenticated (the step-2 planning decision) is exactly why this policy set matters — it's the actual control that stops an unrelated pod from touching the cache, not a redundant nicety.
+
+**Two things I didn't assume — I tested them:**
+- **Does k3s's default NetworkPolicy controller enforce anything at all, or is it a no-op?** Genuinely unknown going in. Proven with a real control/experiment pair: a PSA-compliant but unlabeled `busybox` pod in the same namespace resolved `pokeproxy-redis`'s DNS fine (0.09s), but `nc`/`timeout` to both `pokeproxy-redis:6379` and `pokeproxy-mock-downstream:8001` failed in ~1s (exit 1) every time — while the same connection from inside the actual pokeproxy pod succeeded in 89ms. Same target, same port, different pod identity, different outcome — that's the policy differentiating, not a broken Service or DNS.
+- **Does kubelet's own probe traffic get blocked by a default-deny ingress policy?** Also genuinely unknown — some CNI NetworkPolicy implementations treat node-originated probe traffic as exempt, some don't. Proven empirically: `helm upgrade --install --wait` succeeded with all 4 pods reaching Ready under the full default-deny policy set, with **no explicit allow rule for kubelet anywhere in the templates** — k3s's controller doesn't subject probe traffic to pod-to-pod policy enforcement.
+
+**Incidental proof of a step-4 design decision that was still unverified: PSA `restricted` actually enforces.** My first attempt to spin up the debug pod (`kubectl run netpol-test --image=busybox`) was **rejected outright** by the API server: `violates PodSecurity "restricted:latest": allowPrivilegeEscalation != false, unrestricted capabilities, runAsNonRoot != true, seccompProfile...`. Exactly the "apply a `runAsNonRoot: false` pod, confirm it's rejected" check the original plan called for, arriving as a side effect rather than a deliberate test — still real, still counts.
+
+**A third occurrence of the step-6 probe-timing bug class, and a broader fix this time.** On this fully-fresh cluster, `mock-downstream` failed its own `startupProbe` and got killed once (`failed startup probe, will be restarted`) — the same failure mode step 6 found and fixed, but this time the 30-failure/30-second budget genuinely wasn't enough, likely because this deploy had more concurrent contention than step 6's (the sealed-secrets controller plus all 4 app pods scheduling at once, on a brand-new node with nothing warm). Since pokeproxy didn't flake this run but mock-downstream did, and there's no principled reason to expect the *same* workload to be the unlucky one next time, I widened `startupProbe.failureThreshold` from 30 to 60 (still `periodSeconds: 1`) **for all three workloads symmetrically**, not just the one that happened to flake. Redeployed and confirmed **zero restarts** across all 4 pods.
+
+**Port mapping added to `deploy/k3d/cluster.yaml`**: `8080:80@loadbalancer` — k3d's serverlb port mappings are set at cluster-creation time, so this required a full recreate (fast and safe by now, per step 7's proof). `http://localhost:8080` is the actual "from the host, through the ingress" entry point used for every check below.
+
+**A repeated process lesson, now expected rather than surprising:** the images in the cluster were built for a prior git sha; a redeploy at the current `HEAD` needs a rebuild + reimport first, every time a commit lands between sessions. Handled directly this time without treating it as a new discovery — it's the same sha-drift pattern from step 7, and the reason CI (Part 3) will always build and import at the exact sha it's about to deploy.
+
+Verified by execution, all five step-8 bullets:
+
+| Check | Result |
+|---|---|
+| Signed request from the host through the ingress | `200 {"status":"received"}` via `http://localhost:8080/stream`, no port-forward |
+| >1 MiB rejected at the edge | `413`, Traefik's own error text, **zero trace in the app's access log** |
+| `/stats` (and `/health`, `/ready`) not reachable via ingress | `404` for all three |
+| proxy→redis allowed, everything else denied | Unlabeled pod: DNS resolves, TCP to redis/mock-downstream both fail (~1s). Pokeproxy pod: TCP to redis succeeds in 89ms |
+| DNS still resolves | Proven twice — the unlabeled pod's own `nslookup`, and every successful forward throughout this step, which requires DNS to work |
 
 No Python changed.

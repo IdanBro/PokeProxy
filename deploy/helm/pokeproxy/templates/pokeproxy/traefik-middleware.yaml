@@ -1,0 +1,12 @@
+{{- if and .Values.ingress.enabled .Values.ingress.bodyLimit.enabled (eq .Values.ingress.bodyLimit.provider "traefik") }}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: body-limit
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pokeproxy.component.labels" (dict "context" $ "component" "pokeproxy") | nindent 4 }}
+spec:
+  buffering:
+    maxRequestBodyBytes: {{ .Values.ingress.bodyLimit.maxBytes | int }}
+{{- end }}
