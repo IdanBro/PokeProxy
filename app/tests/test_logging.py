@@ -53,7 +53,7 @@ def logs(monkeypatch: pytest.MonkeyPatch) -> Iterator[io.StringIO]:
 def no_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stub the cache so tests don't depend on a real Redis connection."""
 
-    async def _miss(redis: object, cache_key: str) -> None:
+    async def _miss(redis: object, cache_key: str, metrics: object) -> None:
         return None
 
     async def _store(
@@ -63,6 +63,7 @@ def no_cache(monkeypatch: pytest.MonkeyPatch) -> None:
         headers: dict[str, str],
         content: bytes,
         ttl_seconds: float,
+        metrics: object,
     ) -> None:
         return None
 

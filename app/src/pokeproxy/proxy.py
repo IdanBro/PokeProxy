@@ -7,7 +7,6 @@ import random
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
 
 import httpx
 from fastapi import APIRouter, Request, Response
@@ -15,8 +14,8 @@ from fastapi.responses import JSONResponse
 
 from pokeproxy.cache import cache_response, get_cached_response, make_cache_key
 from pokeproxy.config import PokemonJSON, Rule, decode_pokemon
+from pokeproxy.metrics import Metrics
 from pokeproxy.rules import match_pokemon
-from pokeproxy.stats import StatsRegistry
 
 router = APIRouter()
 
@@ -83,6 +82,8 @@ async def _forward_with_retry(
     url: str,
     content: bytes,
     headers: dict[str, str],
+    metrics: Metrics,
+    rule_label: str,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> httpx.Response:
@@ -97,6 +98,7 @@ async def _forward_with_retry(
             deadline_exceeded = clock() >= deadline
             if attempts_exhausted or deadline_exceeded:
                 raise
+            metrics.downstream_retries_total.labels(rule=rule_label).inc()
             await sleep(delay)
             delay = _next_backoff_delay(delay)
 
@@ -108,7 +110,7 @@ async def _forward_request(
     rule: Rule,
     pokemon: PokemonJSON,
     original_headers: dict[str, str],
-    stats: StatsRegistry,
+    metrics: Metrics,
     cache_key: str,
 ) -> Response:
     json_bytes = pokemon.model_dump_json().encode()
@@ -116,7 +118,6 @@ async def _forward_request(
         original_headers, rule.reason, request.state.request_id
     )
 
-    endpoint_stats = stats.get(rule.url)
     start = time.monotonic()
 
     try:
@@ -126,9 +127,13 @@ async def _forward_request(
             rule.url,
             json_bytes,
             headers,
+            metrics,
+            rule.reason,
         )
 
-        endpoint_stats.record_request(is_error=resp.status_code >= 400)
+        metrics.downstream_requests_total.labels(
+            rule=rule.reason, result="success"
+        ).inc()
 
         request.state.outcome = "forwarded"
         response_headers = _forwardable_response_headers(resp.headers)
@@ -139,6 +144,7 @@ async def _forward_request(
             response_headers,
             resp.content,
             request.app.state.cache_ttl_seconds,
+            metrics,
         )
         return Response(
             content=resp.content,
@@ -146,14 +152,18 @@ async def _forward_request(
             headers=response_headers,
         )
     except httpx.TimeoutException:
-        endpoint_stats.record_request(is_error=True)
+        metrics.downstream_requests_total.labels(
+            rule=rule.reason, result="timeout"
+        ).inc()
         request.state.outcome = "downstream_timeout"
         return JSONResponse(
             content={"error": "downstream timeout"},
             status_code=504,
         )
     except httpx.HTTPError:
-        endpoint_stats.record_request(is_error=True)
+        metrics.downstream_requests_total.labels(
+            rule=rule.reason, result="error"
+        ).inc()
         request.state.outcome = "downstream_error"
         return JSONResponse(
             content={"error": "downstream error"},
@@ -161,27 +171,21 @@ async def _forward_request(
         )
     finally:
         elapsed = time.monotonic() - start
-        endpoint_stats.record_response_time(elapsed)
-        endpoint_stats.bytes_sent += len(json_bytes)
+        metrics.downstream_duration_seconds.labels(rule=rule.reason).observe(elapsed)
 
 
 def _outcome_response(
     request: Request,
-    stats: StatsRegistry,
     outcome: str,
     content: dict[str, object],
     status_code: int,
 ) -> JSONResponse:
     request.state.outcome = outcome
-    stats.record_outcome(outcome)
     return JSONResponse(content=content, status_code=status_code)
 
 
-def _duplicate_response(
-    request: Request, stats: StatsRegistry, cached: dict[str, Any]
-) -> Response:
+def _duplicate_response(request: Request, cached: dict[str, object]) -> Response:
     request.state.outcome = "duplicate_suppressed"
-    stats.record_outcome("duplicate_suppressed")
     return Response(
         content=cached["content"],
         status_code=cached["status_code"],
@@ -191,18 +195,18 @@ def _duplicate_response(
 
 @router.post("/stream")
 async def stream(request: Request) -> Response:
-    stats: StatsRegistry = request.app.state.stats
+    metrics: Metrics = request.app.state.metrics
 
     content_length = request.headers.get("content-length")
     if content_length and int(content_length) > MAX_BODY_SIZE:
         return _outcome_response(
-            request, stats, "rejected_too_large", {"error": "payload too large"}, 413
+            request, "rejected_too_large", {"error": "payload too large"}, 413
         )
 
     body = await request.body()
     if len(body) > MAX_BODY_SIZE:
         return _outcome_response(
-            request, stats, "rejected_too_large", {"error": "payload too large"}, 413
+            request, "rejected_too_large", {"error": "payload too large"}, 413
         )
 
     secret: bytes = request.app.state.hmac_key
@@ -211,45 +215,34 @@ async def stream(request: Request) -> Response:
     signature = request.headers.get("X-Grd-Signature", "")
     if not signature:
         return _outcome_response(
-            request,
-            stats,
-            "rejected_signature_missing",
-            {"error": "invalid signature"},
-            401,
+            request, "rejected_signature_missing", {"error": "invalid signature"}, 401
         )
     if not verify_signature(secret, body, signature):
         return _outcome_response(
-            request,
-            stats,
-            "rejected_signature_invalid",
-            {"error": "invalid signature"},
-            401,
+            request, "rejected_signature_invalid", {"error": "invalid signature"}, 401
         )
 
     body_hash = hashlib.sha256(body).hexdigest()
     cache_key = make_cache_key(body_hash)
 
-    cached = await get_cached_response(redis_client, cache_key)
+    cached = await get_cached_response(redis_client, cache_key, metrics)
     if cached is not None:
-        return _duplicate_response(request, stats, cached)
+        return _duplicate_response(request, cached)
 
     try:
         pokemon = decode_pokemon(body)
     except ValueError:
         return _outcome_response(
-            request, stats, "rejected_protobuf", {"error": "invalid protobuf"}, 400
+            request, "rejected_protobuf", {"error": "invalid protobuf"}, 400
         )
 
     matched_rule = match_pokemon(pokemon, request.app.state.rules)
 
     if matched_rule is None:
-        return _outcome_response(request, stats, "no_rule_matched", {}, 200)
-
-    endpoint_stats = stats.get(matched_rule.url)
-    endpoint_stats.bytes_received += len(body)
+        return _outcome_response(request, "no_rule_matched", {}, 200)
 
     original_headers: dict[str, str] = dict(request.headers)
 
     return await _forward_request(
-        request, matched_rule, pokemon, original_headers, stats, cache_key
+        request, matched_rule, pokemon, original_headers, metrics, cache_key
     )

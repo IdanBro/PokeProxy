@@ -42,10 +42,19 @@ POKEMON_DATA = [
 ]
 
 
-def make_pokemon_proto(data: dict) -> bytes:
-    """Create a serialized protobuf Pokemon message."""
+def make_pokemon_proto(data: dict, number: int) -> bytes:
+    """Create a serialized protobuf Pokemon message.
+
+    `number` overrides `data["number"]` rather than reusing the fixed
+    sample's own value: no rule matches on `number`, so this doesn't change
+    routing, but it does make every payload's protobuf bytes distinct.
+    Without it, the 12-entry POKEMON_DATA set produces exactly 12 distinct
+    body hashes — after the dedup cache (`CACHE_TTL_SECONDS`) has seen all
+    12, every subsequent request replays a cached response instead of
+    generating fresh traffic, so a sustained run reads as a dead service.
+    """
     pokemon = pokemon_pb2.Pokemon()
-    pokemon.number = data["number"]
+    pokemon.number = number
     pokemon.name = data["name"]
     pokemon.type_one = data["type_one"]
     pokemon.type_two = data["type_two"]
@@ -90,7 +99,8 @@ def main() -> None:
     with httpx.Client(timeout=10.0) as client:
         while time.time() < end_time:
             data = random.choice(POKEMON_DATA)
-            body = make_pokemon_proto(data)
+            number = random.randint(900000, 999999)
+            body = make_pokemon_proto(data, number)
             signature = sign_payload(secret, body)
 
             try:

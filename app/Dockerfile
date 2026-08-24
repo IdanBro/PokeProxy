@@ -39,7 +39,8 @@ LABEL org.opencontainers.image.title="pokeproxy" \
 ENV PATH=/opt/pokeproxy/venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    POKEPROXY_CONFIG=/etc/pokeproxy/rules.json
+    POKEPROXY_CONFIG=/etc/pokeproxy/rules.json \
+    POKEPROXY_REVISION=${GIT_SHA}
 
 RUN groupadd --system --gid 10001 pokeproxy \
  && useradd --system --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin pokeproxy \

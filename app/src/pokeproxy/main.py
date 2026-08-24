@@ -5,7 +5,6 @@ import time
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import Any
 
 import httpx
 import redis.asyncio as aioredis
@@ -15,10 +14,10 @@ from pydantic import ValidationError
 
 from pokeproxy.config import Rule, Settings
 from pokeproxy.logging_config import setup_logging
+from pokeproxy.metrics import METRICS_CONTENT_TYPE, Metrics
 from pokeproxy.proxy import REQUEST_ID_HEADER, RetryPolicy
 from pokeproxy.proxy import router as proxy_router
 from pokeproxy.rules import load_rules
-from pokeproxy.stats import StatsRegistry
 
 # Configure logging at import time. Uvicorn sets up its own logging before it
 # imports the app, so doing it here means even its startup lines come out as
@@ -27,8 +26,10 @@ setup_logging()
 
 logger = logging.getLogger("pokeproxy")
 
-# kubelet polls these continuously; access lines for them would bury real traffic.
-_UNLOGGED_PATHS = frozenset({"/health", "/ready", "/stats"})
+# kubelet and Prometheus poll these continuously; counting or logging them
+# would bury real traffic under probe noise in both the access log and the
+# request-rate/latency metrics.
+_UNINSTRUMENTED_PATHS = frozenset({"/health", "/ready", "/metrics"})
 
 
 def _load_settings() -> Settings:
@@ -83,7 +84,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
     app.state.rules = _load_rules(settings.pokeproxy_config)
     app.state.hmac_key = settings.hmac_key
-    app.state.stats = StatsRegistry()
+    app.state.metrics = Metrics.create(
+        revision=settings.pokeproxy_revision, version=settings.build_version
+    )
 
     http_client = _build_http_client(settings)
     app.state.http_client = http_client
@@ -135,9 +138,17 @@ async def access_log(
     request.state.outcome = None
 
     start = time.perf_counter()
+    instrumented = request.url.path not in _UNINSTRUMENTED_PATHS
+    metrics: Metrics = request.app.state.metrics
 
-    def elapsed_ms() -> float:
-        return round((time.perf_counter() - start) * 1000, 2)
+    def elapsed_seconds() -> float:
+        return time.perf_counter() - start
+
+    def record(outcome: str, status: int) -> None:
+        if not instrumented:
+            return
+        metrics.requests_total.labels(outcome=outcome, status=str(status)).inc()
+        metrics.request_duration_seconds.observe(elapsed_seconds())
 
     try:
         response = await call_next(request)
@@ -151,11 +162,11 @@ async def access_log(
                 "method": request.method,
                 "path": request.url.path,
                 "status": 500,
-                "duration_ms": elapsed_ms(),
+                "duration_ms": round(elapsed_seconds() * 1000, 2),
                 "outcome": "internal_error",
             },
         )
-        request.app.state.stats.record_outcome("internal_error")
+        record("internal_error", 500)
         return JSONResponse(
             content={"error": "internal error", "request_id": request_id},
             status_code=500,
@@ -164,7 +175,12 @@ async def access_log(
 
     response.headers[REQUEST_ID_HEADER] = request_id
 
-    if request.url.path not in _UNLOGGED_PATHS:
+    # "unknown" rather than "ok" so a terminal path I forgot to label shows
+    # up as a gap instead of hiding as a success.
+    outcome = request.state.outcome or "unknown"
+    record(outcome, response.status_code)
+
+    if instrumented:
         logger.info(
             "request",
             extra={
@@ -172,10 +188,8 @@ async def access_log(
                 "method": request.method,
                 "path": request.url.path,
                 "status": response.status_code,
-                # "unknown" rather than "ok" so a terminal path I forgot to
-                # label shows up as a gap instead of hiding as a success.
-                "outcome": request.state.outcome or "unknown",
-                "duration_ms": elapsed_ms(),
+                "outcome": outcome,
+                "duration_ms": round(elapsed_seconds() * 1000, 2),
             },
         )
 
@@ -197,7 +211,7 @@ async def ready(request: Request) -> JSONResponse:
     return JSONResponse(content={"status": "not ready"}, status_code=503)
 
 
-@app.get("/stats")
-async def stats(request: Request) -> dict[str, Any]:
-    stats_registry: StatsRegistry = request.app.state.stats
-    return stats_registry.to_dict()
+@app.get("/metrics")
+async def metrics(request: Request) -> Response:
+    app_metrics: Metrics = request.app.state.metrics
+    return Response(content=app_metrics.render(), media_type=METRICS_CONTENT_TYPE)

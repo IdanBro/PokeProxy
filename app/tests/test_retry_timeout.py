@@ -21,6 +21,7 @@ import pytest
 
 from pokeproxy.config import Settings
 from pokeproxy.main import _build_http_client
+from pokeproxy.metrics import Metrics
 from pokeproxy.proxy import RetryPolicy, _forward_with_retry
 
 
@@ -85,11 +86,14 @@ async def test_hung_downstream_is_retried_within_the_deadline() -> None:
     )
     client = _build_http_client(settings)
     policy = RetryPolicy(max_attempts=10, deadline_seconds=1.0)
+    metrics = Metrics.create(revision="test", version="test")
 
     async with _HungServer() as server, client:
         start = time.monotonic()
         with pytest.raises(httpx.TimeoutException):
-            await _forward_with_retry(client, policy, server.url, b"{}", {})
+            await _forward_with_retry(
+                client, policy, server.url, b"{}", {}, metrics, "test rule"
+            )
         elapsed = time.monotonic() - start
 
         assert server.accepted_connections >= 2, (

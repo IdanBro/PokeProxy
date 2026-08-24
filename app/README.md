@@ -63,6 +63,7 @@ uv run uvicorn pokeproxy.main:app --host 127.0.0.1 --port 8000
 | `REDIS_CONNECT_TIMEOUT_SECONDS` | No | `2.0` | Timeout establishing a connection to Redis |
 | `REDIS_SOCKET_TIMEOUT_SECONDS` | No | `2.0` | Timeout for a single Redis read/write |
 | `CACHE_TTL_SECONDS` | No | `300.0` | How long a downstream response stays cached for deduplication |
+| `POKEPROXY_REVISION` | No | `unknown` | Git sha of the running image, baked in at build time. Surfaced as the `pokeproxy_build_info` metric label, so a regression correlates to a deploy on the dashboard |
 
 ### Rules Config
 
@@ -93,7 +94,7 @@ Rules are loaded from the JSON file specified by `POKEPROXY_CONFIG`.
 | `/stream` | POST | Proxy endpoint — validates, matches, forwards |
 | `/health` | GET | Liveness — is the process responsive |
 | `/ready` | GET | Readiness — has startup finished and are we still serving (503 once shutdown begins) |
-| `/stats` | GET | Per-endpoint metrics, plus a count of terminal outcomes that never reach a downstream endpoint (rejections, no-rule-matched, duplicate suppressions, internal errors) |
+| `/metrics` | GET | Prometheus exposition — request rate/latency by outcome, downstream forward rate/latency/retries by rule, cache hit/miss/error, `pokeproxy_build_info` |
 
 ### Logging and request correlation
 
@@ -115,7 +116,7 @@ distinguishable from a fresh `forwarded` request by this field too.
 
 Requests are correlated with `X-Request-ID`. Supply one and it is echoed back
 and passed downstream; omit it and the proxy generates a UUID4. `/health`,
-`/ready` and `/stats` are not access-logged.
+`/ready` and `/metrics` are not access-logged or counted in the request metrics themselves — kubelet and the Prometheus scraper poll them continuously, and counting them would bury real traffic under probe noise.
 
 ## Load Generator
 
