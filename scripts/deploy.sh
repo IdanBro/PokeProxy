@@ -16,6 +16,13 @@ APP_NAMESPACE="pokeproxy"
 RELEASE_NAME="pokeproxy"
 INGRESS_URL="http://localhost:8080/stream"
 
+MONITORING="${MONITORING:-true}"
+MONITORING_NAMESPACE="monitoring"
+MONITORING_NAMESPACE_MANIFEST="$REPO_ROOT/deploy/k8s/namespace-monitoring.yaml"
+MONITORING_RELEASE="kube-prometheus-stack"
+MONITORING_CHART_VERSION="88.5.4"
+MONITORING_VALUES="$REPO_ROOT/deploy/monitoring/values.yaml"
+
 require_command() {
   command -v "$1" >/dev/null 2>&1 || {
     echo "Missing required command: $1" >&2
@@ -75,7 +82,22 @@ helm upgrade --install "$RELEASE_NAME" "$CHART_DIR" \
   --set e2e.image.tag="$GIT_SHA" \
   --atomic --timeout 3m
 
-echo "==> 6. Verify"
+echo "==> 6. Monitoring stack (kube-prometheus-stack)"
+if [[ "$MONITORING" == "false" ]]; then
+  echo "MONITORING=false, skipping monitoring stack install"
+else
+  kubectl --context "$KUBE_CONTEXT" apply -f "$MONITORING_NAMESPACE_MANIFEST"
+  helm repo add prometheus-community https://prometheus-community.github.io/helm-charts >/dev/null 2>&1 || true
+  helm repo update prometheus-community >/dev/null
+  helm upgrade --install "$MONITORING_RELEASE" prometheus-community/kube-prometheus-stack \
+    --kube-context "$KUBE_CONTEXT" \
+    --version "$MONITORING_CHART_VERSION" \
+    --namespace "$MONITORING_NAMESPACE" \
+    -f "$MONITORING_VALUES" \
+    --wait --timeout 5m
+fi
+
+echo "==> 7. Verify"
 kubectl --context "$KUBE_CONTEXT" get pods -n "$APP_NAMESPACE"
 
 echo "Probing $INGRESS_URL (expect 401 — POST with no signature)"

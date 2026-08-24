@@ -1,0 +1,16 @@
+{{- if .Values.monitoring.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pokeproxy.component.fullname" (dict "context" $ "component" "pokeproxy") }}-dashboard
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pokeproxy.component.labels" (dict "context" $ "component" "pokeproxy") | nindent 4 }}
+    # Grafana's k8s-sidecar (deploy/monitoring/values.yaml: grafana.sidecar.dashboards)
+    # watches every namespace for this label/value and loads any data key as a
+    # dashboard JSON file -- this is that contract, not an arbitrary label.
+    grafana_dashboard: "1"
+data:
+  pokeproxy-overview.json: |
+    {{- .Files.Get "dashboards/pokeproxy-overview.json" | nindent 4 }}
+{{- end }}

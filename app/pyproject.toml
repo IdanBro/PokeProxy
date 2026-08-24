@@ -10,6 +10,7 @@ dependencies = [
     "pydantic-settings>=2.7",
     "protobuf>=5.29",
     "redis[hiredis]>=5.0",
+    "prometheus-client>=0.21",
 ]
 
 [dependency-groups]

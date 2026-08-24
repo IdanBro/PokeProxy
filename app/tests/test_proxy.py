@@ -7,7 +7,10 @@ import httpx
 import pytest
 
 from pokeproxy import proxy
+from pokeproxy.metrics import Metrics
 from pokeproxy.proxy import RetryPolicy, _forward_with_retry
+
+_METRICS = Metrics.create(revision="test", version="test")
 
 
 class CountingTransport(httpx.AsyncBaseTransport):
@@ -40,7 +43,13 @@ async def _run_retry(
 ) -> httpx.Response:
     async with httpx.AsyncClient(transport=transport) as client:
         return await _forward_with_retry(
-            client, policy, "http://downstream.invalid/pokemon", b"{}", {}
+            client,
+            policy,
+            "http://downstream.invalid/pokemon",
+            b"{}",
+            {},
+            _METRICS,
+            "test rule",
         )
 
 
@@ -101,6 +110,8 @@ def test_stops_when_deadline_is_exceeded_before_attempts_are_exhausted() -> None
                 "http://downstream.invalid/pokemon",
                 b"{}",
                 {},
+                _METRICS,
+                "test rule",
                 clock=lambda: next(fake_clock),
                 sleep=no_wait,
             )
@@ -139,7 +150,13 @@ async def _run_retry_with_client(
     client: httpx.AsyncClient, policy: RetryPolicy
 ) -> httpx.Response:
     return await _forward_with_retry(
-        client, policy, "http://downstream.invalid/pokemon", b"{}", {}
+        client,
+        policy,
+        "http://downstream.invalid/pokemon",
+        b"{}",
+        {},
+        _METRICS,
+        "test rule",
     )
 
 
@@ -158,6 +175,8 @@ def test_first_attempt_never_sleeps() -> None:
                 "http://downstream.invalid/pokemon",
                 b"{}",
                 {},
+                _METRICS,
+                "test rule",
                 sleep=fail_if_called,
             )
 

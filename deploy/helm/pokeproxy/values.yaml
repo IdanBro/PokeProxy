@@ -12,6 +12,21 @@ ingress:
 networkPolicy:
   enabled: true
 
+monitoring:
+  enabled: false
+  # Prometheus's own scrape default is 30s; 15s here trades a bit more
+  # scrape volume for a dashboard/alert that reacts within one 5m rate()
+  # window sooner. Independent of the app's own liveness/readiness
+  # periodSeconds, which govern kubelet health checks, not metrics scraping.
+  scrapeInterval: 15s
+  scrapeTimeout: 10s
+  # PokeProxyHighServerErrorRate's `for:` duration (plan default 10m -- must
+  # exceed the retry budget and a normal rolling deploy by orders of
+  # magnitude). Exposed as a value so a live-fire drill can shorten it
+  # (--set monitoring.highErrorRateFor=1m) without hand-editing the rule,
+  # then restore the real value afterward.
+  highErrorRateFor: 10m
+
 e2e:
   enabled: false
   image:

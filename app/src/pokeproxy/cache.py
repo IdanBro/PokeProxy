@@ -10,17 +10,24 @@ from redis.exceptions import RedisError
 if TYPE_CHECKING:
     import redis.asyncio as aioredis
 
+    from pokeproxy.metrics import Metrics
+
 logger = logging.getLogger("pokeproxy")
 
 
-async def get_cached_response(redis: aioredis.Redis, cache_key: str) -> dict[str, Any] | None:
+async def get_cached_response(
+    redis: aioredis.Redis, cache_key: str, metrics: Metrics
+) -> dict[str, Any] | None:
     try:
         data = await redis.get(cache_key)
     except RedisError:
         logger.warning("cache lookup failed, treating as a miss", exc_info=True)
+        metrics.cache_operations_total.labels(operation="get", result="error").inc()
         return None
     if data is None:
+        metrics.cache_operations_total.labels(operation="get", result="miss").inc()
         return None
+    metrics.cache_operations_total.labels(operation="get", result="hit").inc()
     stored = json.loads(data)
     return {
         "status_code": stored["status_code"],
@@ -36,6 +43,7 @@ async def cache_response(
     headers: dict[str, str],
     content: bytes,
     ttl_seconds: float,
+    metrics: Metrics,
 ) -> None:
     payload = json.dumps(
         {
@@ -46,8 +54,10 @@ async def cache_response(
     )
     try:
         await redis.set(cache_key, payload, ex=int(ttl_seconds))
+        metrics.cache_operations_total.labels(operation="set", result="success").inc()
     except RedisError:
         logger.warning("cache write failed, continuing without caching", exc_info=True)
+        metrics.cache_operations_total.labels(operation="set", result="error").inc()
 
 
 def make_cache_key(body_hash: str) -> str:

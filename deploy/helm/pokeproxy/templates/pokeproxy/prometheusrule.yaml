@@ -1,0 +1,57 @@
+{{- $spec := .Values.components.pokeproxy }}
+{{- if and $spec.enabled .Values.monitoring.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "pokeproxy.component.fullname" (dict "context" $ "component" "pokeproxy") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pokeproxy.component.labels" (dict "context" $ "component" "pokeproxy") | nindent 4 }}
+spec:
+  groups:
+    - name: pokeproxy
+      rules:
+        - alert: PokeProxyHighServerErrorRate
+          expr: |
+            sum(rate(pokeproxy_requests_total{status=~"5.."}[5m]))
+              / sum(rate(pokeproxy_requests_total[5m])) > 0.05
+            and sum(rate(pokeproxy_requests_total[5m])) > 0.1
+          for: {{ .Values.monitoring.highErrorRateFor }}
+          labels:
+            severity: page
+          annotations:
+            summary: "PokeProxy server error rate above 5% for {{ .Values.monitoring.highErrorRateFor }}"
+            description: >-
+              More than 5% of requests are returning 5xx (internal_error,
+              downstream_error, or downstream_timeout), sustained past the
+              retry budget and a normal rolling deploy. Not a single blip --
+              this has held for the full `for:` window. Check
+              pokeproxy_downstream_requests_total{result!="success"} by rule
+              and pod logs for the outcome/status breakdown.
+        - alert: PokeProxyCacheBackendErrors
+          expr: sum(rate(pokeproxy_cache_operations_total{result="error"}[5m])) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "PokeProxy cache backend (Redis) returning errors"
+            description: >-
+              cache.py treats a RedisError as a cache miss by design (M1:
+              Redis must not gate readiness), which makes a dead Redis
+              silent everywhere except this metric. The service is still
+              serving correctly, just without dedup -- downstream load may
+              be multiplying by the duplicate ratio. Check the redis pod.
+        - alert: PokeProxyTargetsDown
+          expr: absent(up{job="pokeproxy"} == 1)
+          for: 5m
+          labels:
+            severity: page
+          annotations:
+            summary: "No healthy PokeProxy scrape targets"
+            description: >-
+              Every ratio alert above is silent when there are zero scrape
+              targets -- a crashed pod emits nothing. This fires when
+              Prometheus cannot find any pokeproxy target reporting up=1,
+              which the ratio-based alerts structurally cannot detect on
+              their own.
+{{- end }}

@@ -20,6 +20,13 @@ CONVERGE_POLL_SECONDS=5
 APP_NAMESPACE="pokeproxy"
 INGRESS_URL="http://localhost:8081/stream"
 
+MONITORING="${MONITORING:-true}"
+MONITORING_NAMESPACE="monitoring"
+MONITORING_NAMESPACE_MANIFEST="$REPO_ROOT/deploy/k8s/namespace-monitoring.yaml"
+MONITORING_RELEASE="kube-prometheus-stack"
+MONITORING_CHART_VERSION="88.5.4"
+MONITORING_VALUES="$REPO_ROOT/deploy/monitoring/values.yaml"
+
 require_command() {
   command -v "$1" >/dev/null 2>&1 || {
     echo "Missing required command: $1" >&2
@@ -69,7 +76,22 @@ helm upgrade --install argocd argo/argo-cd \
   -f "$ARGOCD_VALUES" \
   --wait --timeout 5m
 
-echo "==> 5. Application (targetRevision $ARGOCD_TARGET_REVISION)"
+echo "==> 5. Monitoring stack (kube-prometheus-stack)"
+if [[ "$MONITORING" == "false" ]]; then
+  echo "MONITORING=false, skipping monitoring stack install"
+else
+  kubectl --context "$KUBE_CONTEXT" apply -f "$MONITORING_NAMESPACE_MANIFEST"
+  helm repo add prometheus-community https://prometheus-community.github.io/helm-charts >/dev/null 2>&1 || true
+  helm repo update prometheus-community >/dev/null
+  helm upgrade --install "$MONITORING_RELEASE" prometheus-community/kube-prometheus-stack \
+    --kube-context "$KUBE_CONTEXT" \
+    --version "$MONITORING_CHART_VERSION" \
+    --namespace "$MONITORING_NAMESPACE" \
+    -f "$MONITORING_VALUES" \
+    --wait --timeout 5m
+fi
+
+echo "==> 6. Application (targetRevision $ARGOCD_TARGET_REVISION)"
 sed "s|targetRevision: main|targetRevision: $ARGOCD_TARGET_REVISION|" "$ARGOCD_APPLICATION" \
   | kubectl --context "$KUBE_CONTEXT" apply -f -
 
@@ -87,7 +109,7 @@ application_errors() {
     | grep -i "error" || true
 }
 
-echo "==> 6. Waiting for Argo CD to converge the application (up to ${CONVERGE_TIMEOUT_SECONDS}s)"
+echo "==> 7. Waiting for Argo CD to converge the application (up to ${CONVERGE_TIMEOUT_SECONDS}s)"
 deadline=$(( SECONDS + CONVERGE_TIMEOUT_SECONDS ))
 last_state=""
 while true; do
@@ -124,7 +146,7 @@ while true; do
   sleep "$CONVERGE_POLL_SECONDS"
 done
 
-echo "==> 7. Verify"
+echo "==> 8. Verify"
 kubectl --context "$KUBE_CONTEXT" get pods -n "$APP_NAMESPACE"
 
 echo "Probing $INGRESS_URL (expect 401 — POST with no signature)"

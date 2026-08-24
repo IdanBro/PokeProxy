@@ -100,12 +100,18 @@ def test_duplicate_response_is_counted_by_outcome() -> None:
     with _client_with_downstream(accept) as client:
         client.post("/stream", content=body, headers=headers)
         client.post("/stream", content=body, headers=headers)
-        outcomes = client.app.state.stats.outcomes
+        registry = client.app.state.metrics.registry
 
-    assert outcomes["duplicate_suppressed"] == 1
+    assert (
+        registry.get_sample_value(
+            "pokeproxy_requests_total",
+            {"outcome": "duplicate_suppressed", "status": "200"},
+        )
+        == 1
+    )
 
 
-def test_duplicate_replay_does_not_inflate_endpoint_stats() -> None:
+def test_duplicate_replay_does_not_inflate_downstream_requests() -> None:
     async def accept(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"status": "received"})
 
@@ -114,9 +120,15 @@ def test_duplicate_replay_does_not_inflate_endpoint_stats() -> None:
     with _client_with_downstream(accept) as client:
         client.post("/stream", content=body, headers=headers)
         client.post("/stream", content=body, headers=headers)
-        endpoint_stats = next(iter(client.app.state.stats.endpoints.values()))
+        registry = client.app.state.metrics.registry
 
-    assert endpoint_stats.request_count == 1
+    assert (
+        registry.get_sample_value(
+            "pokeproxy_downstream_requests_total",
+            {"rule": "legendary pokemon", "result": "success"},
+        )
+        == 1
+    )
 
 
 def test_downstream_failure_is_not_cached_and_the_next_duplicate_retries(

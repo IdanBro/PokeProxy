@@ -1,0 +1,130 @@
+# Values for prometheus-community/kube-prometheus-stack, trimmed for a
+# single-node laptop k3d cluster (Part 4 plan D8). Installed imperatively by
+# scripts/deploy.sh, the same layer Argo CD is installed at in
+# scripts/bootstrap-prod.sh -- not an Argo-managed Application (D6).
+#
+# App-side scrape/alert/dashboard objects (ServiceMonitor, PrometheusRule,
+# dashboard ConfigMap) do NOT live here -- they live in the app's own Helm
+# chart under `monitoring.enabled` (D7), reconciled by Argo in prod.
+
+fullnameOverride: kube-prometheus-stack
+
+# k3s doesn't expose kube-apiserver/controller-manager/scheduler/proxy/etcd
+# the way this chart's default scrape configs expect (kubeadm-style static
+# pods on fixed host ports). Left enabled, every one of these is a
+# permanently-down target and a source of noisy default alerts for
+# components that were never actually reachable.
+kubeApiServer:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
+kubeEtcd:
+  enabled: false
+
+defaultRules:
+  rules:
+    etcd: false
+    kubeApiserverAvailability: false
+    kubeApiserverBurnrate: false
+    kubeApiserverHistogram: false
+    kubeApiserverSlos: false
+    kubeControllerManager: false
+    kubeProxy: false
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
+
+prometheus:
+  prometheusSpec:
+    retention: 6h
+    # No storageSpec set -> Prometheus Operator falls back to an emptyDir.
+    # Metrics don't survive a pod restart; the accepted laptop trade-off (D8).
+    #
+    # Selector*NilUsesHelmValues: false so Prometheus watches ServiceMonitor/
+    # PodMonitor/PrometheusRule/Probe objects across all releases and
+    # namespaces, not only ones carrying this release's own label. The app
+    # chart's ServiceMonitor/PrometheusRule (D7, separate Helm release) rely
+    # on this to be picked up at all.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+alertmanager:
+  # Kept enabled (D9) -- the assignment's alert needs to be observably able
+  # to fire, not just defined.
+  alertmanagerSpec:
+    retention: 6h
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        cpu: 50m
+        memory: 64Mi
+
+grafana:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 384Mi
+  # 192Mi OOMKilled the grafana container in practice (exit 137, restart-looped)
+  # under real dashboard-loading load; `kubectl top pod` showed ~145Mi resident
+  # even before it stabilized. 384Mi verified stable -- see WORKLOG/step-3 report.
+  # persistence left at chart default (disabled -> emptyDir). Dashboards ship
+  # as ConfigMaps (D7, step 5) and get reloaded by the chart's own sidecar;
+  # nothing here needs to survive a pod restart.
+  sidecar:
+    # The two k8s-sidecar containers (dashboard + datasource reload) had no
+    # resource caps at all under chart defaults -- ~76Mi and ~72Mi resident
+    # each in practice, unbounded. Capped explicitly, in keeping with D8.
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      cpu: 50m
+      memory: 32Mi
+  # hostNetwork/hostPID/hostPath (this subchart's defaults, left as-is) are
+  # why the monitoring namespace carries the `privileged` PSA label -- see
+  # deploy/k8s/namespace-monitoring.yaml.

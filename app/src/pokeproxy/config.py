@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _package_version
 from typing import Literal
 
 from google.protobuf.message import DecodeError
@@ -20,6 +22,19 @@ _HMAC_KEY_HELP = (
     "Set POKEPROXY_HMAC_KEY to a base64-encoded key of at least "
     f"{MIN_HMAC_KEY_BYTES} bytes. Generate one with: openssl rand -base64 32"
 )
+
+
+def _package_build_version() -> str:
+    """Read the installed package version for pokeproxy_build_info.
+
+    Falls back rather than raising: a missing dist-info (e.g. a stray local
+    invocation outside the built venv) shouldn't block startup over a label
+    value.
+    """
+    try:
+        return _package_version("pokeproxy")
+    except PackageNotFoundError:
+        return "unknown"
 
 
 def _decode_hmac_key(raw: str) -> bytes:
@@ -60,6 +75,7 @@ class Settings(BaseSettings):
     redis_connect_timeout_seconds: float = 2.0
     redis_socket_timeout_seconds: float = 2.0
     cache_ttl_seconds: float = 300.0
+    pokeproxy_revision: str = "unknown"
 
     @field_validator("pokeproxy_hmac_key")
     @classmethod
@@ -102,6 +118,10 @@ class Settings(BaseSettings):
     @property
     def hmac_key(self) -> bytes:
         return _decode_hmac_key(self.pokeproxy_hmac_key)
+
+    @property
+    def build_version(self) -> str:
+        return _package_build_version()
 
 
 class PokemonJSON(BaseModel):

@@ -1,0 +1,525 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "panels": [],
+      "title": "Row 1 — Verdict: is this service healthy right now?",
+      "type": "row"
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Server error rate",
+      "description": "sum(rate(pokeproxy_requests_total{status=~\"5..\"}[5m])) / sum(rate(pokeproxy_requests_total[5m])) -- matches the PokeProxyHighServerErrorRate alert expression (5% threshold). Only the NUMERATOR is wrapped in 'or vector(0)', deliberately: if pokeproxy_requests_total goes fully absent (target down), the denominator is empty too, so the whole expression stays 'No data' instead of falsely rendering a healthy 0%. That gap is what PokeProxyTargetsDown alerts on. Do not wrap the denominator too -- that would silently mask a real outage as 0%.",
+      "gridPos": { "h": 4, "w": 5, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "(sum(rate(pokeproxy_requests_total{status=~\"5..\"}[5m])) or vector(0)) / sum(rate(pokeproxy_requests_total[5m]))",
+          "legendFormat": "error rate",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.01 },
+              { "color": "red", "value": 0.05 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Request rate",
+      "description": "sum(rate(pokeproxy_requests_total[5m]))",
+      "gridPos": { "h": 4, "w": 5, "x": 5, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "sum(rate(pokeproxy_requests_total[5m]))",
+          "legendFormat": "requests/s",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "decimals": 2,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "p99 latency",
+      "description": "histogram_quantile(0.99, sum(rate(pokeproxy_request_duration_seconds_bucket[5m])) by (le)) -- total latency as the caller experiences it. Unlabeled histogram (D5): 401s dilute this alongside slow forwards, documented tradeoff.",
+      "gridPos": { "h": 4, "w": 5, "x": 10, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(pokeproxy_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Pods ready / desired",
+      "description": "kube_deployment_status_replicas_ready / kube_deployment_spec_replicas for the pokeproxy Deployment -- the one panel app-level metrics structurally can't provide; kube-state-metrics only.",
+      "gridPos": { "h": 4, "w": 5, "x": 15, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "kube_deployment_status_replicas_ready{namespace=\"pokeproxy\",deployment=\"pokeproxy\"}",
+          "legendFormat": "ready",
+          "refId": "A"
+        },
+        {
+          "expr": "kube_deployment_spec_replicas{namespace=\"pokeproxy\",deployment=\"pokeproxy\"}",
+          "legendFormat": "desired",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 16,
+      "type": "stat",
+      "title": "Targets up",
+      "description": "count(up{job=\"pokeproxy\"}==1) vs count(up{job=\"pokeproxy\"}) -- the dashboard-side counterpart to PokeProxyTargetsDown. BOTH sides wrapped in 'or vector(0)' here, unlike the ratio panels elsewhere: this panel's entire purpose is to render an explicit 0 during a real outage (when the ServiceMonitor finds zero endpoints and the 'up' series itself goes absent), not to preserve 'No data' as a signal for another alert.",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "count(up{job=\"pokeproxy\"} == 1) or vector(0)",
+          "legendFormat": "up",
+          "refId": "A"
+        },
+        {
+          "expr": "count(up{job=\"pokeproxy\"}) or vector(0)",
+          "legendFormat": "total",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "id": 6,
+      "panels": [],
+      "title": "Row 2 — RED detail",
+      "type": "row"
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Request rate by outcome",
+      "description": "sum(rate(pokeproxy_requests_total[5m])) by (outcome) -- the full outcome taxonomy, stacked. no_rule_matched lives here (deliberately not alerted on, see plan).",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "sum(rate(pokeproxy_requests_total[5m])) by (outcome)",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 30,
+            "stacking": { "mode": "normal", "group": "A" },
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Latency: p50 / p90 / p99, downstream p99 overlaid",
+      "description": "The 'us or them' panel -- total latency percentiles vs. downstream-only p99.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(pokeproxy_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.90, sum(rate(pokeproxy_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p90",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(pokeproxy_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "C"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(pokeproxy_downstream_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "downstream p99",
+          "refId": "D"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "spanNulls": false }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "downstream p99" },
+            "properties": [{ "id": "custom.lineStyle", "value": { "dash": [10, 10], "fill": "dash" } }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+      "id": 9,
+      "panels": [],
+      "title": "Row 3 — Dependencies",
+      "type": "row"
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Downstream rate / error-rate / retry-rate by rule",
+      "description": "sum(rate(pokeproxy_downstream_requests_total[5m])) by (rule); error subset (result=~\"error|timeout\"); sum(rate(pokeproxy_downstream_retries_total[5m])) by (rule) -- retries are a leading indicator, climbing before the 10s forward_deadline is exhausted.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "sum(rate(pokeproxy_downstream_requests_total[5m])) by (rule)",
+          "legendFormat": "{{rule}} · rate",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(pokeproxy_downstream_requests_total{result=~\"error|timeout\"}[5m])) by (rule)",
+          "legendFormat": "{{rule}} · errors",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(pokeproxy_downstream_retries_total[5m])) by (rule)",
+          "legendFormat": "{{rule}} · retries",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Cache hit rate + Redis error rate",
+      "description": "The silent-failure panel: cache.py returns None on RedisError, indistinguishable from a miss at the response layer. pokeproxy_cache_operations_total{result=\"error\"} is the only place a dead Redis becomes visible. Cache hit rate: only the NUMERATOR is wrapped in 'or vector(0)', same reasoning as the Server error rate panel -- if the app itself is down, pokeproxy_cache_operations_total is fully absent and the denominator stays empty too, so this renders 'No data' rather than a false healthy 0%; that case belongs to PokeProxyTargetsDown / the Targets up panel, not this one. Redis error rate is a plain rate (not a ratio), so it's fully wrapped -- 0 errors/s is an unambiguous, correct reading whenever the app is actually up.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "(sum(rate(pokeproxy_cache_operations_total{operation=\"get\",result=\"hit\"}[5m])) or vector(0)) / sum(rate(pokeproxy_cache_operations_total{operation=\"get\"}[5m]))",
+          "legendFormat": "cache hit rate",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(pokeproxy_cache_operations_total{result=\"error\"}[5m])) or vector(0)",
+          "legendFormat": "redis error rate",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "spanNulls": false }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "redis error rate" },
+            "properties": [
+              { "id": "unit", "value": "ops" },
+              { "id": "custom.axisPlacement", "value": "right" }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+      "id": 12,
+      "panels": [],
+      "title": "Row 4 — Resources & version",
+      "type": "row"
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "CPU vs limit + throttled-period ratio",
+      "description": "cAdvisor via the kubelet job (container_cpu_usage_seconds_total / container_cpu_cfs_throttled_periods_total), limit via kube-state-metrics' kube_pod_container_resource_limits. Filtered by namespace/container, not job -- there is no job=\"cadvisor\".",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"pokeproxy\",container=\"pokeproxy\"}[5m]))",
+          "legendFormat": "cpu usage",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(kube_pod_container_resource_limits{namespace=\"pokeproxy\",container=\"pokeproxy\",resource=\"cpu\"})",
+          "legendFormat": "cpu limit",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(container_cpu_cfs_throttled_periods_total{namespace=\"pokeproxy\",container=\"pokeproxy\"}[5m])) / sum(rate(container_cpu_cfs_periods_total{namespace=\"pokeproxy\",container=\"pokeproxy\"}[5m]))",
+          "legendFormat": "throttled ratio",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "spanNulls": false }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "throttled ratio" },
+            "properties": [
+              { "id": "unit", "value": "percentunit" },
+              { "id": "custom.axisPlacement", "value": "right" }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Memory working set vs limit",
+      "description": "container_memory_working_set_bytes -- the number the kernel OOM-kills against, not process_resident_memory_bytes.",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "sum(container_memory_working_set_bytes{namespace=\"pokeproxy\",container=\"pokeproxy\"})",
+          "legendFormat": "working set",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(kube_pod_container_resource_limits{namespace=\"pokeproxy\",container=\"pokeproxy\",resource=\"memory\"})",
+          "legendFormat": "limit",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 15,
+      "type": "table",
+      "title": "Restart count + build revision",
+      "description": "kube_pod_container_status_restarts_total by pod, and pokeproxy_build_info (revision/version) -- correlates a regression with the deploy that caused it.",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "sum(kube_pod_container_status_restarts_total{namespace=\"pokeproxy\",container=\"pokeproxy\"}) by (pod)",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        },
+        {
+          "expr": "pokeproxy_build_info",
+          "format": "table",
+          "instant": true,
+          "refId": "B"
+        }
+      ],
+      "transformations": [
+        { "id": "merge", "options": {} }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      }
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["pokeproxy"],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "hide": 0,
+        "label": "Prometheus",
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": { "from": "now-30m", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "PokeProxy Overview",
+  "uid": "pokeproxy-overview",
+  "version": 1,
+  "weekStart": ""
+}
