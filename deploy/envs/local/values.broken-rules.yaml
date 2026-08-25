@@ -1,0 +1,16 @@
+# Debug fixture for the Tiltfile's "Break rules.json" button (Part 5 step 5).
+# Reproduces Part 3 scenario B on demand: rules[0].reason no longer matches
+# what e2e_check.py asserts ("strong fire pokemon"), so the post-install E2E
+# hook fails and --atomic rolls the release back. Applied via `-f` on top of
+# `--reuse-values`, never `--set` on a list index -- Helm's `--set` silently
+# clobbers the rest of the list when the index path targets a nested map
+# inside a list (found the hard way in step 1).
+components:
+  pokeproxy:
+    rules:
+      - reason: BROKEN-scenario-b-demo
+        match: ["type_one==Fire", "attack>80", "generation<4"]
+      - reason: legendary pokemon
+        match: ["legendary==true"]
+      - reason: tanky pokemon
+        match: ["defense>100", "hit_points>80"]

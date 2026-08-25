@@ -487,7 +487,7 @@ One hypothetical commit traced end to end against `README_HOME_ASSIGNMENT.md` Pa
 
 **F-14** — nothing asserts that the digests promote writes are actually pullable. The build jobs' outputs make this near-certain; a `buildx imagetools inspect` in the promote job makes the desired state self-validating for about three seconds of runtime.
 
-**F-15** — `already_sealed()` returns success without confirming that the existing ciphertext decrypts under the reused key, so a stale key/ciphertext pair is accepted silently and only surfaces as a failed pod. Same family as F-2.
+**F-15** — `already_sealed()` returns success without confirming that the existing ciphertext decrypts under the reused key, so a stale key/ciphertext pair is accepted silently and only surfaces as a failed pod. Same family as F-2. **Partially fixed in Part 5 step 3** (`docs/planning/part-05-automation.md` D5): the clean-clone case (no key present at all) now mints and unconditionally re-seals in the same run. The narrower case this finding names — a key *is* present, is wrong, and was not minted this run — is unchanged and still open; see `docs/issues/026`.
 
 **F-16** — `git pull --rebase origin main` in promote (`ci.yml:266`) has no conflict handling; `concurrency: promote` makes a race improbable rather than impossible, and a conflict would fail opaquely.
 

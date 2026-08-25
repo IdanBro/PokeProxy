@@ -1,7 +1,7 @@
 # Values for prometheus-community/kube-prometheus-stack, trimmed for a
 # single-node laptop k3d cluster (Part 4 plan D8). Installed imperatively by
-# scripts/deploy.sh, the same layer Argo CD is installed at in
-# scripts/bootstrap-prod.sh -- not an Argo-managed Application (D6).
+# scripts/install-monitoring.sh, called from the Tiltfile locally and from
+# scripts/bootstrap-prod.sh for prod -- not an Argo-managed Application (D6).
 #
 # App-side scrape/alert/dashboard objects (ServiceMonitor, PrometheusRule,
 # dashboard ConfigMap) do NOT live here -- they live in the app's own Helm
@@ -108,9 +108,19 @@ grafana:
   # ingress path instead of `/` -- without it the UI loads but every asset
   # 404s. domain/root_url are set for correct sub-path parsing, not for
   # exact link generation: this file is shared verbatim between dev (port
-  # 8080) and prod (port 8081) via deploy.sh/bootstrap-prod.sh, so no single
-  # port is correct for both -- acceptable, since nothing here does
-  # OAuth/email that would need an exact absolute URL.
+  # 8080) and prod (port 8081) via install-monitoring.sh, called from both
+  # the Tiltfile and bootstrap-prod.sh, so no single port is correct for
+  # both -- acceptable, since nothing here does OAuth/email that would need
+  # an exact absolute URL.
+  #
+  # Fixed dev-only admin password (A-2, Part 5 audit 2026-08-25). Without
+  # this the subchart's `randAlphaNum` mints a new password on every `helm
+  # upgrade`, changing the admin Secret and rolling the Grafana Deployment
+  # on every idempotent `make up` re-run even when nothing else changed.
+  # Not a security boundary -- this is a laptop dev cluster, and the Grafana
+  # chart's own post-install NOTES print the `kubectl get secret ...`
+  # command to read whatever admin password is set, fixed or random.
+  adminPassword: "pokeproxy-dev"
   grafana.ini:
     server:
       domain: localhost
