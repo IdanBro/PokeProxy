@@ -44,67 +44,58 @@ For meaningful changes I used the same loop:
 
 The prompts below are intentionally concise. Repository state and decisions live in the repository instead of being repeated in every conversation.
 
-Full history originally kept two parallel logs of the same sessions here — this verbatim prompt log and the denser `## Session Notes` below. Cut to a short representative sample during the final cleanup pass: `Session Notes` is the single source of truth for what happened and why; these two prompts just show the steering style — structured, gated on explicit approval, one issue at a time.
+Full history originally kept two parallel logs of the same sessions here — this verbatim prompt log and the denser `## Session Notes` below. Cut to a short representative sample during the final cleanup pass: `Session Notes` is the single source of truth for what happened and why; these two prompts show two different halves of the loop — kicking off a Part's design, and approving one scoped implementation inside it.
 
-### Session 01 — Repository Review
+### Session 04 — Part 3: CI/CD & GitOps
 
 ```text
-We are starting with a read-only review of the Guardio PokeProxy assignment.
+We are starting Part 3 — CI/CD & GitOps in a fresh session.
 
-Read CLAUDE.md, README_HOME_ASSIGNMENT.md, WORKLOG.md, and the complete repository. Inspect git status as well.
+Read CLAUDE.md, README_HOME_ASSIGNMENT.md, WORKLOG.md, the current deployment configuration, and inspect git status/diff.
 
-Do not modify any files yet.
+Do not implement anything yet.
 
-I want you to:
-1. Explain the application architecture and end-to-end request flow in plain language.
-2. Review Part 1 from a production/operations perspective.
-3. Build a prioritized issue inventory: Critical / High / Medium / Low.
-4. For each finding, give: evidence in the code, realistic production impact, and likely direction — but do not implement anything.
-5. Identify decisions in Part 1 that could constrain Docker, Kubernetes, CI/CD, GitOps, observability, E2E, or bootstrap later.
-6. Recommend the order in which we should tackle Part 1.
-7. Pick the single first issue you recommend addressing and explain it using the pre-change workflow from CLAUDE.md.
+Design the delivery flow from commit to verified deployment.
 
-Do not write code. Stop after the first issue explanation and wait for me.
+Evaluate and explain:
+- CI stages for lint/test/build
+- image registry and immutable image versioning
+- caching/reproducibility
+- direct scripted deployment vs GitOps
+- if GitOps: who builds, who updates desired state, who reconciles it, and how image versions are represented
+- post-deploy E2E that sends real protobuf + HMAC traffic through PokeProxy and validates the mock downstream result
+- how verification gates deployment
+- rollback for rollout failure, verification failure, and a bad version discovered later
+- what can realistically run locally vs what is defined/demonstrated
+
+Do not call a process GitOps if CI is directly mutating the cluster behind Git's back.
+
+Recommend the simplest coherent architecture and repository layout, including tradeoffs.
+
+Then pick only the first implementation step and stop for my approval.
 ```
 
-### Session 07 — Final Adversarial Review
+### Reusable — Approve one implementation
 
 ```text
-The five required Parts are now intended to be complete.
+Approved.
 
-Act as a Guardio Senior/Staff DevOps interviewer grading this submission.
+Implement only the issue we just agreed on.
 
-Read the entire assignment, repository, README, WORKLOG, planning artifacts, issue documentation, CI/CD, Kubernetes, monitoring, automation, tests, and relevant git history/diffs.
+Please write a clean code, no comments, understandable, using SOLID principles. the code should explain itself instead of having comments doing it.
 
-Do not modify anything.
+Add or update regression tests where appropriate, run the relevant checks, inspect the final git diff, update WORKLOG.md, and create/update the corresponding docs/issues/ write-up.
 
-Perform an adversarial review across:
-- production correctness and failure modes
-- code hardening
-- security/config/secrets
-- Docker
-- Kubernetes
-- CI/CD and actual GitOps semantics
-- post-deploy E2E
-- rollback
-- observability/dashboard/alerts
-- one-command bootstrap and teardown
-- idempotency/reproducibility
-- documentation quality
-- AI/planning artifacts
-- unnecessary complexity
-- requirements that are technically present but not truly demonstrated
+Remove any code/tests that are not correlating with the current and new implementation, in order to maintain a small and relevant codebase.
 
-Map every assignment deliverable to the exact files that satisfy it.
+Do not start another issue.
 
-Rank all findings:
-- BLOCKER
-- SHOULD FIX
-- NICE TO HAVE
+At the end, summarize:
+- what changed
+- what verification actually ran
+- any remaining risk or follow-up
 
-Then give me the 10 technical interview questions you would be most likely to ask based specifically on choices in this repository.
-
-Stop. Do not fix anything until I choose a finding.
+Then stop.
 ```
 
 ---
