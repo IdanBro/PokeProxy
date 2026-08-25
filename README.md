@@ -53,6 +53,7 @@ Plus Docker actually running, and host port 8080 (8081 for prod) free — both c
 | `make up-prod` | `bash scripts/bootstrap-prod.sh` | bring up the prod stand-in (its own k3d cluster + Argo CD) — see `deploy/README.md` |
 | `make down-prod` | delete the prod stand-in cluster | tear down prod; leaves the prod sealing key on disk |
 | `make status` | cluster/pods/Helm releases/ingress probe, read-only | "what's running right now" |
+| `make install-tools` | `bash scripts/install-tools.sh` | optional bonus: installs missing prerequisites from official upstream sources (per-tool + final approval gate); `preflight.sh` already fails loud instead if you'd rather install manually |
 | `make help` | lists all of the above | — |
 
 ## `make dev` — the debugging surface
@@ -94,6 +95,7 @@ scripts/
   install-monitoring.sh    kube-prometheus-stack install, shared by local and prod
   bootstrap-prod.sh, down-prod.sh   the prod stand-in
   break-rules.sh, restore-rules.sh, status.sh   what the make/Tilt targets call
+  install-tools.sh         optional: `make install-tools` (see the command table above)
 
 Tiltfile                  the local dev graph: namespace, monitoring, image builds, the
                            chart, per-workload status, the debug buttons
