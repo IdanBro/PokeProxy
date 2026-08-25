@@ -85,6 +85,22 @@ For a real signed request, `app/scripts/load_generator.py` builds valid protobuf
 cd app && python scripts/load_generator.py --url http://localhost:8080/stream --rps 1 --duration 5
 ```
 
+## 7. Monitoring stack
+
+`deploy.sh` step 6 installs `kube-prometheus-stack` (Prometheus, Grafana, Alertmanager, kube-state-metrics, node-exporter, the Prometheus Operator) into a `monitoring` namespace, trimmed for a laptop cluster (`deploy/monitoring/values.yaml`: emptyDir storage, 6h retention, small resource requests). `MONITORING=false bash scripts/deploy.sh` skips it for a faster dev iteration loop.
+
+The `monitoring` namespace carries `pod-security.kubernetes.io/enforce: privileged` (`deploy/k8s/namespace-monitoring.yaml`) — a deliberate, scoped exception to the `restricted` posture `pokeproxy`'s namespace enforces, needed because `prometheus-node-exporter` runs with `hostNetwork`/`hostPID`/hostPath mounts on `/proc`,`/sys` by design, which both `baseline` and `restricted` forbid.
+
+The app chart renders a `ServiceMonitor`, a `PrometheusRule` (3 alerts), and a Grafana dashboard ConfigMap under `.Values.monitoring.enabled` (`true` in `deploy/envs/local/values.yaml` and `deploy/envs/prod/values.yaml`). A `NetworkPolicy` scoped to `namespaceSelector: monitoring` **and** `podSelector: app.kubernetes.io/name=prometheus` — not the whole namespace — is what actually lets the scrape through.
+
+**Grafana** is on the Ingress, path-based, no port-forward needed: `http://localhost:8080/grafana/` (the "PokeProxy Overview" dashboard is also the Grafana *home* dashboard — it's what you land on). `kubectl get secret kube-prometheus-stack-grafana -n monitoring -o jsonpath='{.data.admin-password}' | base64 -d` for the auto-generated admin password. A plain `kubectl port-forward ... 3000:80` + `localhost:3000/` no longer works on its own: `grafana.ini`'s `serve_from_sub_path`/`root_url` (needed so the Ingress path works at all) makes Grafana 301 `localhost:3000/` to `http://localhost/grafana/` — the port gets dropped in the redirect target and the browser dead-ends on port 80. If you do port-forward (e.g. no Ingress available), go straight to the sub-path: `localhost:3000/grafana/`.
+
+```bash
+kubectl --context k3d-pokeproxy port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090
+```
+
+**Prometheus is deliberately not on the Ingress** (A-3, `docs/planning/part-04-observability.md` § Requirement audit): its read API (`/api/v1/query`, `/api/v1/status/config` — full scrape config — and the `/-/reload` lifecycle endpoint) has no auth of its own in this chart, and an Ingress would put all of it on the open internet unauthenticated in both dev and prod (`bootstrap-prod.sh` loads this same values file). Same disclosure class `docs/issues/025` closed for the app's own `/stats` — port-forward-only keeps it consistent with D4's decision to keep the app's own `/metrics` off the Ingress too. Prometheus at `localhost:9090/targets` shows the `pokeproxy` scrape target; `/alerts` shows the three `PokeProxyHighServerErrorRate`/`PokeProxyCacheBackendErrors`/`PokeProxyTargetsDown` rules. Full design rationale, panel list, and alert threshold justifications: `docs/planning/part-04-observability.md`.
+
 ## Teardown
 
 ```bash
@@ -120,8 +136,9 @@ Idempotent, and the order matters:
 | 2 | Apply `deploy/k8s/namespace.yaml` | PSA labels must exist before any workload lands |
 | 3 | `seal-hmac.sh --env prod` | pins the sealing key from `scripts/init-sealing-key.sh --env prod` (run once, separately — see step 0 above) **before** installing the controller, so the controller adopts our key instead of minting its own. **Exits 1 immediately if that key was never provisioned or restored**, instead of silently minting a fresh one that can't decrypt the committed ciphertext (F-2) |
 | 4 | Install Argo CD | needs the SealedSecret CRD from step 3 to be able to sync the chart |
-| 5 | Apply the `Application` | |
-| 6 | Wait for `Synced` / `Healthy`, then probe the ingress | fails loudly with the Application and pod state if it doesn't converge |
+| 5 | Monitoring stack (`kube-prometheus-stack`) | installed imperatively, same layer as Argo CD and sealed-secrets — not an Argo-managed Application (Part 4 D6). Must exist **before** step 6, so the app chart's `ServiceMonitor`/`PrometheusRule` (a different Helm release) have a running Prometheus Operator and cross-namespace CRD watch to be discovered by. `MONITORING=false` skips it |
+| 6 | Apply the `Application` | renders the app chart's `monitoring.enabled: true` (prod, set in `deploy/envs/prod/values.yaml`) objects against the stack step 5 just installed |
+| 7 | Wait for `Synced` / `Healthy`, then probe the ingress | fails loudly with the Application and pod state if it doesn't converge |
 
 The namespace is deliberately **not** owned by Argo CD (`CreateNamespace=false`): its PSA labels are a cluster-admin concern, and letting the app's own sync manage the boundary it runs inside is a circularity I'd rather not have.
 

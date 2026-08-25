@@ -18,7 +18,9 @@ spec:
             and sum(rate(pokeproxy_requests_total[5m])) > 0.1
           for: {{ .Values.monitoring.highErrorRateFor }}
           labels:
-            severity: page
+            severity: critical
+            namespace: {{ .Release.Namespace }}
+            service: pokeproxy
           annotations:
             summary: "PokeProxy server error rate above 5% for {{ .Values.monitoring.highErrorRateFor }}"
             description: >-
@@ -33,6 +35,8 @@ spec:
           for: 5m
           labels:
             severity: warning
+            namespace: {{ .Release.Namespace }}
+            service: pokeproxy
           annotations:
             summary: "PokeProxy cache backend (Redis) returning errors"
             description: >-
@@ -45,7 +49,9 @@ spec:
           expr: absent(up{job="pokeproxy"} == 1)
           for: 5m
           labels:
-            severity: page
+            severity: critical
+            namespace: {{ .Release.Namespace }}
+            service: pokeproxy
           annotations:
             summary: "No healthy PokeProxy scrape targets"
             description: >-

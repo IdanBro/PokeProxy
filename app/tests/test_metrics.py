@@ -302,3 +302,45 @@ def test_request_duration_is_observed() -> None:
         )
 
     assert count == 1
+
+
+# --- Default collectors (A-1) -------------------------------------------------
+
+
+def test_default_process_and_python_collectors_are_registered() -> None:
+    """Metrics.create() must register these onto its own registry (A-1) --
+    prometheus_client's default collectors otherwise live on the
+    module-level registry and never appear on our per-instance one."""
+    with TestClient(app) as client:
+        text = client.get("/metrics").text
+
+    for name in (
+        "process_cpu_seconds_total",
+        "process_resident_memory_bytes",
+        "process_open_fds",
+        "python_gc_objects_collected_total",
+        "python_info",
+    ):
+        assert name in text, f"{name} missing from /metrics"
+
+
+# --- Pre-initialized downstream label combinations (A-5) ---------------------
+
+
+def test_downstream_metrics_are_preinitialized_to_zero_per_rule() -> None:
+    """Every (rule, result) combination and every rule must exist at 0 from
+    process start, or `sum(...) by (rule)` renders "No data" instead of a
+    real 0 until the first real retry/error happens for that rule."""
+    with TestClient(app) as client:
+        for rule in ("strong fire pokemon", "legendary pokemon", "tanky pokemon"):
+            assert _sample(client, "pokeproxy_downstream_retries_total", rule=rule) == 0
+            for result in ("success", "timeout", "error"):
+                assert (
+                    _sample(
+                        client,
+                        "pokeproxy_downstream_requests_total",
+                        rule=rule,
+                        result=result,
+                    )
+                    == 0
+                )

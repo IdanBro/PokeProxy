@@ -71,18 +71,7 @@ kubectl --context "$KUBE_CONTEXT" apply -f "$NAMESPACE_MANIFEST"
 echo "==> 4. Seal the HMAC secret"
 KUBE_CONTEXT="$KUBE_CONTEXT" bash "$SEAL_SCRIPT" --env local
 
-echo "==> 5. Deploy"
-helm upgrade --install "$RELEASE_NAME" "$CHART_DIR" \
-  --kube-context "$KUBE_CONTEXT" \
-  -n "$APP_NAMESPACE" \
-  -f "$VALUES_LOCAL" \
-  --set components.pokeproxy.image.tag="$GIT_SHA" \
-  --set components.mock-downstream.image.tag="$GIT_SHA" \
-  --set e2e.enabled=true \
-  --set e2e.image.tag="$GIT_SHA" \
-  --atomic --timeout 3m
-
-echo "==> 6. Monitoring stack (kube-prometheus-stack)"
+echo "==> 5. Monitoring stack (kube-prometheus-stack)"
 if [[ "$MONITORING" == "false" ]]; then
   echo "MONITORING=false, skipping monitoring stack install"
 else
@@ -96,6 +85,17 @@ else
     -f "$MONITORING_VALUES" \
     --wait --timeout 5m
 fi
+
+echo "==> 6. Deploy"
+helm upgrade --install "$RELEASE_NAME" "$CHART_DIR" \
+  --kube-context "$KUBE_CONTEXT" \
+  -n "$APP_NAMESPACE" \
+  -f "$VALUES_LOCAL" \
+  --set components.pokeproxy.image.tag="$GIT_SHA" \
+  --set components.mock-downstream.image.tag="$GIT_SHA" \
+  --set e2e.enabled=true \
+  --set e2e.image.tag="$GIT_SHA" \
+  --atomic --timeout 3m
 
 echo "==> 7. Verify"
 kubectl --context "$KUBE_CONTEXT" get pods -n "$APP_NAMESPACE"

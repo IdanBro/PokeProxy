@@ -38,6 +38,24 @@ defaultRules:
     kubeSchedulerRecording: false
 
 prometheus:
+  # Ingress deliberately NOT enabled (A-3). Prometheus's read API has no
+  # auth of its own in this chart -- an Ingress here would put
+  # /api/v1/query, /api/v1/status/config (full scrape config incl. internal
+  # topology) and the /-/reload lifecycle endpoint on the open internet
+  # unauthenticated, confirmed live (all 200 through the ingress before this
+  # was reverted). Same disclosure class docs/issues/025 was just written to
+  # close for the app's own /stats -- would reopen it one layer up, and
+  # bootstrap-prod.sh loads this same file so it'd land in prod too. D4
+  # already keeps the app's own /metrics off the Ingress for the identical
+  # reason; port-forward (deploy/README.md) is the access path, consistent
+  # with that precedent rather than a new exception. Considered a Traefik
+  # BasicAuth middleware instead (precedent: helm/pokeproxy/templates/
+  # pokeproxy/traefik-middleware.yaml) -- rejected as more moving parts
+  # (separate Middleware + Secret + IngressRoute objects for a second,
+  # separately-installed Helm release) for a laptop-only dev convenience
+  # that port-forward already covers with zero extra surface.
+  ingress:
+    enabled: false
   prometheusSpec:
     retention: 6h
     # No storageSpec set -> Prometheus Operator falls back to an emptyDir.
@@ -74,6 +92,44 @@ alertmanager:
         memory: 64Mi
 
 grafana:
+  # Path-based ingress on the same host-less Traefik rule pattern the app's
+  # own Ingress uses (deploy/helm/pokeproxy/templates/pokeproxy/ingress.yaml
+  # -- no `host:`, matches whatever hostname the client used). `hosts: []`
+  # renders that host-less rule; the chart's own doc comment says hosts
+  # "must be provided", but the rendered template (verified via `helm
+  # template`) produces a valid rule with none, same as the app's ingress.
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    path: /grafana
+    hosts: []
+  # serve_from_sub_path + a root_url ending in the same /grafana/ path is
+  # what makes Grafana generate its own asset/API links correctly under the
+  # ingress path instead of `/` -- without it the UI loads but every asset
+  # 404s. domain/root_url are set for correct sub-path parsing, not for
+  # exact link generation: this file is shared verbatim between dev (port
+  # 8080) and prod (port 8081) via deploy.sh/bootstrap-prod.sh, so no single
+  # port is correct for both -- acceptable, since nothing here does
+  # OAuth/email that would need an exact absolute URL.
+  grafana.ini:
+    server:
+      domain: localhost
+      root_url: "%(protocol)s://%(domain)s/grafana/"
+      serve_from_sub_path: true
+    dashboards:
+      # Sidecar's dashboard folder, confirmed live from the running
+      # container's env (FOLDER=/tmp/dashboards); PokeProxy Overview is
+      # provisioned there as pokeproxy-overview.json (A-8). Without this,
+      # Grafana lands the on-call on a 25-dashboard root-folder search page.
+      default_home_dashboard_path: /tmp/dashboards/pokeproxy-overview.json
+  # The chart's own Grafana ServiceMonitor scrapes plain `/metrics` by
+  # default; serve_from_sub_path above makes Grafana 301 that to
+  # http://localhost/grafana/metrics, so without this the target is
+  # permanently `down` (connection refused) and TargetDown fires forever --
+  # confirmed live (A-2). The Prometheus subchart derives its own scrape
+  # path from routePrefix automatically; the Grafana subchart does not.
+  serviceMonitor:
+    path: /grafana/metrics
   resources:
     requests:
       cpu: 50m
