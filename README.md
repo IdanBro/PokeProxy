@@ -106,7 +106,7 @@ docs/
   issues/                  one write-up per production issue found and fixed (Part 1)
 ```
 
-## How it fits together (Parts 1–4, briefly)
+## How it fits together
 
 - **Part 1** — `docs/issues/` has one write-up per issue found in the original code: problem, production impact, fix. `docs/planning/part-01-production-hardening.md` for the approach.
 - **Part 2** — `deploy/helm/pokeproxy` is the chart: the app, Redis, mock-downstream, resource limits, health probes, secrets via Sealed Secrets. `docs/planning/part-02-infrastructure-deployment.md`.
