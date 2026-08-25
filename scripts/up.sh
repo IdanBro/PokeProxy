@@ -32,6 +32,9 @@ kubectl config get-contexts "$KUBE_CONTEXT" >/dev/null 2>&1 || {
   exit 1
 }
 
+echo "==> Sealing key, sealed-secrets controller, sealed HMAC value"
+KUBE_CONTEXT="$KUBE_CONTEXT" bash "$REPO_ROOT/scripts/seal-hmac.sh" --env local
+
 cd "$REPO_ROOT"
 
 if [[ "$MODE" == "dev" ]]; then

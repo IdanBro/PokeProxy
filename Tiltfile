@@ -22,11 +22,12 @@ GIT_SHA = str(local('git rev-parse --short HEAD')).strip()
 k8s_yaml('deploy/k8s/namespace.yaml')
 k8s_resource(new_name='namespace', objects=['pokeproxy:namespace'])
 
-local_resource(
-    'sealing-key',
-    cmd=['bash', 'scripts/seal-hmac.sh', '--env', 'local'],
-    labels=['app'],
-)
+# Sealing-key mint-and-reseal (P5-1/P5-2, seal-hmac.sh) runs in scripts/up.sh
+# before Tilt even starts, not as a Tilt resource -- same pattern as
+# preflight.sh. It's a one-shot, idempotent prerequisite, not something that
+# benefits from Tilt's live-reload/re-trigger UI, and running it here means
+# `tilt up`/`tilt dev` re-execute it on every restart of a long-lived
+# interactive session, not just once per bootstrap.
 
 local_resource(
     'monitoring',
@@ -34,6 +35,9 @@ local_resource(
     env={'KUBE_CONTEXT': 'k3d-pokeproxy'},
     resource_deps=['namespace'],
     labels=['app'],
+    links=[
+        link('http://localhost:8080/grafana/', 'Grafana'),
+    ],
 )
 
 docker_build(
@@ -84,20 +88,7 @@ helm_resource(
         ('components.mock-downstream.image.repository', 'components.mock-downstream.image.tag'),
         ('e2e.image.repository', 'e2e.image.tag'),
     ],
-    resource_deps=['sealing-key', 'namespace', 'monitoring'],
-)
-
-# `helm upgrade --wait` above only proves pods came Ready -- it asserts
-# nothing about Prometheus actually scraping pokeproxy or the alert rules
-# loading without errors, the exact class of bug that bit Part 4 twice
-# (a permanently-down Grafana scrape target, two silently-empty dashboard
-# panels). Depends on `pokeproxy-helm` directly so `tilt ci` gates on it.
-local_resource(
-    'monitoring-health',
-    cmd=['bash', 'scripts/monitoring-health.sh'],
-    env={'KUBE_CONTEXT': 'k3d-pokeproxy'},
-    resource_deps=['pokeproxy-helm'],
-    labels=['app'],
+    resource_deps=['namespace', 'monitoring'],
 )
 
 def workload_status_resource(ui_name, deployment, component_label):
