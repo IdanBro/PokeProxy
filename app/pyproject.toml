@@ -30,7 +30,7 @@ packages = ["src/pokeproxy"]
 [tool.ruff]
 target-version = "py313"
 line-length = 88
-exclude = ["src/pokeproxy/proto/pokemon_pb2.py", "src/pokeproxy/proto/pokemon_pb2.pyi"]
+extend-exclude = ["src/pokeproxy/proto/pokemon_pb2.py", "src/pokeproxy/proto/pokemon_pb2.pyi"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "B", "I", "UP", "ASYNC", "S", "T20", "SIM", "RUF"]

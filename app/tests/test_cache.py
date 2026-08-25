@@ -153,6 +153,73 @@ async def test_write_failure_is_logged(caplog: pytest.LogCaptureFixture) -> None
     assert "cache write failed" in caplog.text
 
 
+# --- malformed cache entries (schema drift / corruption during a rolling deploy) --
+
+
+async def test_malformed_json_entry_is_treated_as_a_miss() -> None:
+    key = make_cache_key("bad-json")
+    redis = FakeRedis({key: "not json"})
+
+    result = await get_cached_response(redis, key, _metrics())
+
+    assert result is None
+
+
+async def test_entry_missing_a_required_key_is_treated_as_a_miss() -> None:
+    key = make_cache_key("missing-key")
+    redis = FakeRedis({key: json.dumps({"status_code": 200})})
+
+    result = await get_cached_response(redis, key, _metrics())
+
+    assert result is None
+
+
+async def test_entry_with_invalid_base64_content_is_treated_as_a_miss() -> None:
+    key = make_cache_key("bad-b64")
+    redis = FakeRedis(
+        {
+            key: json.dumps(
+                {"status_code": 200, "headers": {}, "content_b64": "not-valid-base64!!"}
+            )
+        }
+    )
+
+    result = await get_cached_response(redis, key, _metrics())
+
+    assert result is None
+
+
+async def test_malformed_entry_is_logged(caplog: pytest.LogCaptureFixture) -> None:
+    key = make_cache_key("bad-json")
+    redis = FakeRedis({key: "not json"})
+
+    with caplog.at_level(logging.WARNING, logger="pokeproxy"):
+        await get_cached_response(redis, key, _metrics())
+
+    assert "cache entry malformed" in caplog.text
+
+
+async def test_malformed_entry_is_counted_as_an_error_not_a_hit() -> None:
+    key = make_cache_key("bad-json")
+    redis = FakeRedis({key: "not json"})
+    metrics = _metrics()
+
+    await get_cached_response(redis, key, metrics)
+
+    assert (
+        metrics.registry.get_sample_value(
+            "pokeproxy_cache_operations_total", {"operation": "get", "result": "error"}
+        )
+        == 1
+    )
+    assert (
+        metrics.registry.get_sample_value(
+            "pokeproxy_cache_operations_total", {"operation": "get", "result": "hit"}
+        )
+        is None
+    )
+
+
 # --- cache_operations_total (Part 4) ----------------------------------------
 
 

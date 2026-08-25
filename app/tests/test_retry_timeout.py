@@ -101,8 +101,10 @@ async def test_hung_downstream_is_retried_within_the_deadline() -> None:
             f"deadline; only {server.accepted_connections} connection(s) were "
             "accepted (R1 regression)"
         )
-        assert elapsed < policy.deadline_seconds + 0.5, (
-            f"retry loop overran its deadline: {elapsed:.2f}s"
+        overrun_budget = settings.forward_attempt_timeout_seconds + 0.5
+        assert elapsed < policy.deadline_seconds + overrun_budget, (
+            "the deadline is checked between attempts, so the loop may overrun it "
+            f"by at most one attempt timeout; took {elapsed:.2f}s"
         )
 
 

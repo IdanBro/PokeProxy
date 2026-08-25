@@ -11,90 +11,14 @@ the access log.
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
-from collections.abc import Awaitable, Callable, Iterator
-from contextlib import contextmanager
-
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from pokeproxy.main import app
 from pokeproxy.metrics import METRICS_CONTENT_TYPE
-from pokeproxy.proto import pokemon_pb2
 
-DEV_SECRET_B64 = "dGVzdC1zZWNyZXQtZm9yLWxvY2FsLWRldg=="  # noqa: S105 — local dev key
-
-
-@pytest.fixture(autouse=True)
-def _configured_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("POKEPROXY_HMAC_KEY", DEV_SECRET_B64)
-    monkeypatch.setenv("POKEPROXY_CONFIG", "config/rules.json")
-
-
-@pytest.fixture
-def no_cache(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _miss(redis: object, cache_key: str, metrics: object) -> None:
-        return None
-
-    async def _store(
-        redis: object,
-        cache_key: str,
-        status_code: int,
-        headers: dict[str, str],
-        content: bytes,
-        ttl_seconds: float,
-        metrics: object,
-    ) -> None:
-        return None
-
-    monkeypatch.setattr("pokeproxy.proxy.get_cached_response", _miss)
-    monkeypatch.setattr("pokeproxy.proxy.cache_response", _store)
-
-
-def _sign(body: bytes) -> str:
-    return hmac.new(base64.b64decode(DEV_SECRET_B64), body, hashlib.sha256).hexdigest()
-
-
-def _pikachu() -> bytes:
-    """Deliberately matches no rule in config/rules.json."""
-    pokemon = pokemon_pb2.Pokemon()
-    fields = {
-        "number": 25, "name": "Pikachu", "type_one": "Electric", "type_two": "",
-        "total": 320, "hit_points": 35, "attack": 55, "defense": 40,
-        "special_attack": 50, "special_defense": 50, "speed": 90,
-        "generation": 1, "legendary": False,
-    }
-    for key, value in fields.items():
-        setattr(pokemon, key, value)
-    return pokemon.SerializeToString()
-
-
-def _legendary_pokemon() -> bytes:
-    pokemon = pokemon_pb2.Pokemon()
-    fields = {
-        "number": 150, "name": "Mewtwo", "type_one": "Psychic", "type_two": "",
-        "total": 680, "hit_points": 106, "attack": 110, "defense": 90,
-        "special_attack": 154, "special_defense": 90, "speed": 130,
-        "generation": 1, "legendary": True,
-    }
-    for key, value in fields.items():
-        setattr(pokemon, key, value)
-    return pokemon.SerializeToString()
-
-
-DownstreamHandler = Callable[[httpx.Request], Awaitable[httpx.Response]]
-
-
-@contextmanager
-def _client_with_downstream(handler: DownstreamHandler) -> Iterator[TestClient]:
-    with TestClient(app) as client:
-        client.app.state.http_client = httpx.AsyncClient(
-            transport=httpx.MockTransport(handler)
-        )
-        yield client
+from .conftest import _client_with_downstream, _legendary_pokemon, _pikachu, _sign
 
 
 def _sample(client: TestClient, name: str, **labels: str) -> float | None:
@@ -199,7 +123,8 @@ def test_forwarded_success_is_counted_on_both_series(no_cache: None) -> None:
         )
         assert (
             client.app.state.metrics.registry.get_sample_value(
-                "pokeproxy_downstream_duration_seconds_count", {"rule": "legendary pokemon"}
+                "pokeproxy_downstream_duration_seconds_count",
+                {"rule": "legendary pokemon", "result": "success"},
             )
             == 1
         )
@@ -242,6 +167,67 @@ def test_downstream_error_is_counted(
         client.post("/stream", content=body, headers={"X-Grd-Signature": _sign(body)})
 
         assert _sample(client, "pokeproxy_requests_total", outcome="downstream_error", status="502") == 1
+        assert (
+            _sample(
+                client,
+                "pokeproxy_downstream_requests_total",
+                rule="legendary pokemon",
+                result="error",
+            )
+            == 1
+        )
+
+
+def test_non_2xx_downstream_response_is_counted_as_a_downstream_error(
+    no_cache: None,
+) -> None:
+    async def respond_service_unavailable(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"error": "downstream unavailable"})
+
+    body = _legendary_pokemon()
+    with _client_with_downstream(respond_service_unavailable) as client:
+        response = client.post(
+            "/stream", content=body, headers={"X-Grd-Signature": _sign(body)}
+        )
+
+        assert response.status_code == 503
+        assert (
+            _sample(client, "pokeproxy_requests_total", outcome="downstream_non_2xx", status="503")
+            == 1
+        )
+        assert (
+            _sample(
+                client,
+                "pokeproxy_downstream_requests_total",
+                rule="legendary pokemon",
+                result="error",
+            )
+            == 1
+        )
+
+
+def test_oversized_downstream_response_is_counted_as_a_downstream_error(
+    no_cache: None,
+) -> None:
+    async def respond_with_oversized_body(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"x" * (1_048_576 + 1))
+
+    body = _legendary_pokemon()
+    with _client_with_downstream(respond_with_oversized_body) as client:
+        response = client.post(
+            "/stream", content=body, headers={"X-Grd-Signature": _sign(body)}
+        )
+
+        assert response.status_code == 502
+        assert (
+            _sample(
+                client,
+                "pokeproxy_requests_total",
+                outcome="downstream_response_too_large",
+                status="502",
+            )
+            == 1
+        )
         assert (
             _sample(
                 client,

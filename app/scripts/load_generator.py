@@ -18,11 +18,11 @@ import hmac
 import random
 import sys
 import time
+from pathlib import Path
 
 import httpx
 
-# Add parent to path so we can import proto
-sys.path.insert(0, "src")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from pokeproxy.proto import pokemon_pb2
 
 # Sample Pokemon data for generating realistic payloads

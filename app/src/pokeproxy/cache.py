@@ -27,13 +27,19 @@ async def get_cached_response(
     if data is None:
         metrics.cache_operations_total.labels(operation="get", result="miss").inc()
         return None
+    try:
+        stored = json.loads(data)
+        response = {
+            "status_code": stored["status_code"],
+            "headers": stored["headers"],
+            "content": base64.b64decode(stored["content_b64"]),
+        }
+    except (KeyError, TypeError, ValueError):
+        logger.warning("cache entry malformed, treating as a miss", exc_info=True)
+        metrics.cache_operations_total.labels(operation="get", result="error").inc()
+        return None
     metrics.cache_operations_total.labels(operation="get", result="hit").inc()
-    stored = json.loads(data)
-    return {
-        "status_code": stored["status_code"],
-        "headers": stored["headers"],
-        "content": base64.b64decode(stored["content_b64"]),
-    }
+    return response
 
 
 async def cache_response(
@@ -42,7 +48,7 @@ async def cache_response(
     status_code: int,
     headers: dict[str, str],
     content: bytes,
-    ttl_seconds: float,
+    ttl_seconds: int,
     metrics: Metrics,
 ) -> None:
     payload = json.dumps(
@@ -53,7 +59,7 @@ async def cache_response(
         }
     )
     try:
-        await redis.set(cache_key, payload, ex=int(ttl_seconds))
+        await redis.set(cache_key, payload, ex=ttl_seconds)
         metrics.cache_operations_total.labels(operation="set", result="success").inc()
     except RedisError:
         logger.warning("cache write failed, continuing without caching", exc_info=True)

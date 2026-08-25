@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -173,7 +174,11 @@ def main() -> None:
     if not raw_secret:
         print(json.dumps({"result": "fail", "error": "POKEPROXY_HMAC_KEY not set"}))
         sys.exit(1)
-    secret = base64.b64decode(raw_secret)
+    try:
+        secret = base64.b64decode(raw_secret, validate=True)
+    except binascii.Error:
+        print(json.dumps({"result": "fail", "error": "POKEPROXY_HMAC_KEY is not valid base64"}))
+        sys.exit(1)
 
     try:
         with httpx.Client(timeout=args.timeout) as client:

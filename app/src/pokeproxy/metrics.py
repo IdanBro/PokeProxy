@@ -52,12 +52,13 @@ class Metrics:
     def create(
         cls, *, revision: str, version: str, rule_names: Iterable[str] = ()
     ) -> Metrics:
-        # See A-12 in docs/planning/part-04-observability.md.
+        # `_created` timestamp gauges were 17% of exposed series; nothing queries them.
         disable_created_metrics()
 
         registry = CollectorRegistry()
 
-        # See A-1 in docs/planning/part-04-observability.md.
+        # A per-instance registry keeps tests isolated, but the default process/platform
+        # collectors live on the global one, so they must be registered here explicitly.
         ProcessCollector(registry=registry)
         PlatformCollector(registry=registry)
         GCCollector(registry=registry)
@@ -81,7 +82,8 @@ class Metrics:
             ["rule"],
             registry=registry,
         )
-        # See A-5 in docs/planning/part-04-observability.md.
+        # A child series exists only once `.labels(...)` is called, so a rule with no
+        # failures yet renders as "No data" instead of 0. Touch them into existence.
         for name in rule_names:
             downstream_retries_total.labels(rule=name)
             for result in _DOWNSTREAM_RESULTS:
@@ -104,8 +106,8 @@ class Metrics:
             downstream_requests_total=downstream_requests_total,
             downstream_duration_seconds=Histogram(
                 "pokeproxy_downstream_duration_seconds",
-                "Downstream forward duration by rule.",
-                ["rule"],
+                "Downstream forward duration by rule and result.",
+                ["rule", "result"],
                 buckets=_DURATION_BUCKETS,
                 registry=registry,
             ),
