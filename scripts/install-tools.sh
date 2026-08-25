@@ -64,12 +64,11 @@ k3d_version() { k3d version 2>/dev/null | grep -m1 '^k3d version' | awk '{print 
 kubeseal_version() { kubeseal --version 2>&1 | awk '{print $3}'; }
 git_version() { git --version 2>/dev/null | awk '{print $3}'; }
 tilt_version() { tilt version 2>/dev/null | head -n1 | sed -E 's/^v?([0-9]+\.[0-9]+\.[0-9]+).*/\1/'; }
-jq_version() { jq --version 2>/dev/null | sed -E 's/^jq-//'; }
 docker_version() { docker --version 2>/dev/null | awk '{print $3}' | tr -d ','; }
 
 # name | floor version | version-check fn | install fn | official source (shown in the summary)
-TOOLS=(kubectl helm k3d kubeseal git tilt jq docker)
-declare -A FLOOR=( [kubectl]="1.24.0" [helm]="3.8.0" [k3d]="5.0.0" [kubeseal]="0.24.0" [git]="2.20.0" [tilt]="0.30.0" [jq]="1.6" [docker]="20.10.0" )
+TOOLS=(kubectl helm k3d kubeseal git tilt docker)
+declare -A FLOOR=( [kubectl]="1.24.0" [helm]="3.8.0" [k3d]="5.0.0" [kubeseal]="0.24.0" [git]="2.20.0" [tilt]="0.30.0" [docker]="20.10.0" )
 declare -A SOURCE=(
   [kubectl]="dl.k8s.io (official Kubernetes release binaries)"
   [helm]="raw.githubusercontent.com/helm/helm (official get-helm-3 script)"
@@ -77,7 +76,6 @@ declare -A SOURCE=(
   [kubeseal]="github.com/bitnami-labs/sealed-secrets/releases (official upstream release)"
   [git]="[apt on Linux | Homebrew/Xcode CLT on macOS] (git-scm.com's own recommended install path)"
   [tilt]="raw.githubusercontent.com/tilt-dev/tilt (official install.sh)"
-  [jq]="github.com/jqlang/jq/releases (official upstream release)"
   [docker]="get.docker.com (official convenience script, Linux only) | needs sudo"
 )
 
@@ -89,7 +87,6 @@ check_version_fn() {
     kubeseal) kubeseal_version ;;
     git) git_version ;;
     tilt) tilt_version ;;
-    jq) jq_version ;;
     docker) docker_version ;;
   esac
 }
@@ -188,19 +185,6 @@ install_tilt() {
   rm -f "$script"
 }
 
-install_jq() {
-  local ver_tag asset
-  ver_tag="$(curl_get https://api.github.com/repos/jqlang/jq/releases/latest | grep -m1 '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')"
-  case "${OS}-${ARCH}" in
-    linux-amd64) asset="jq-linux-amd64" ;;
-    linux-arm64) asset="jq-linux-arm64" ;;
-    darwin-amd64) asset="jq-macos-amd64" ;;
-    darwin-arm64) asset="jq-macos-arm64" ;;
-  esac
-  curl_dl "https://github.com/jqlang/jq/releases/download/${ver_tag}/${asset}" "${INSTALL_DIR}/jq"
-  chmod +x "${INSTALL_DIR}/jq"
-}
-
 install_docker() {
   if [[ "$OS" == "linux" ]]; then
     local script
@@ -224,7 +208,6 @@ run_installer() {
     kubeseal) install_kubeseal ;;
     git) install_git ;;
     tilt) install_tilt ;;
-    jq) install_jq ;;
     docker) install_docker ;;
   esac
 }

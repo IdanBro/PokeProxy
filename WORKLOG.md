@@ -10,9 +10,9 @@ PokeProxy is fixed and hardened (Part 1), containerized and deployed via Helm to
 
 | Part | What shipped | Design & audit trail | Status |
 |---|---|---|---|
-| 1 — Production Hardening | 16 issues fixed (`docs/issues/001-016`): HMAC config validation, structured JSON logging, bounded forward retry, guarded/timeout-bounded Redis calls, startup-time rules load, liveness/readiness split, header hygiene both directions, correct outcome accounting, cache→dedup layer, CWD-independent tests. Three more found and fixed in the final review pass (`028-030`): non-2xx downstream responses counted as success and cached, unguarded cache deserialization, unbounded downstream response body | `docs/planning/part-01-production-hardening.md` | Done |
+| 1 — Production Hardening | 16 issues fixed (`docs/issues/001-016`): HMAC config validation, structured JSON logging, bounded forward retry, guarded/timeout-bounded Redis calls, startup-time rules load, liveness/readiness split, header hygiene both directions, correct outcome accounting, cache→dedup layer, CWD-independent tests. Four more found and fixed in the final review pass (`028-031`): non-2xx downstream responses counted as success and cached, unguarded cache deserialization, unbounded downstream response body, request body buffered in full before the size check ran | `docs/planning/part-01-production-hardening.md` | Done |
 | 2 — Infrastructure & Deployment | Helm chart (pokeproxy + redis + mock-downstream), sealed-secrets for the HMAC key, NetworkPolicies, Pod Security Admission `restricted`, resource requests/limits, liveness/readiness probes, graceful shutdown wiring, PodDisruptionBudget | `docs/planning/part-02-infrastructure-deployment.md` | Done |
-| 3 — CI/CD & GitOps | GitHub Actions CI (lint/test/build/sign/SBOM), Argo CD GitOps to dev + prod stand-in, digest-pinned `promote` job, PostSync E2E as a real `helm --atomic` gate, `rollback.yml`, all 3 rollback scenarios (bad tag, wrong-rule regression, real `rollback.yml` dispatch) executed live against real prod | `docs/planning/part-03-cicd-gitops.md` | Done |
+| 3 — CI/CD & GitOps | GitHub Actions CI (lint/test/build/sign/SBOM), Argo CD GitOps to dev + prod stand-in, digest-pinned `promote` job, post-deploy E2E: a real `--atomic` gate on the local Tilt/`helm_resource` path (Helm auto-rolls-back on hook failure), detection-only under Argo CD in prod (PostSync hook fails, app goes Degraded, no automatic rollback — see `deploy/README.md`'s Verification and Rollback sections), `rollback.yml`, all 3 rollback scenarios (bad tag, wrong-rule regression, real `rollback.yml` dispatch) executed live against real prod | `docs/planning/part-03-cicd-gitops.md` | Done |
 | 4 — Observability | Prometheus metrics via `prometheus-client`, `kube-prometheus-stack` in dev + prod, 18-panel Grafana dashboard (14 data panels across 4 rows), 3 justified alerts (2 forced end-to-end through Alertmanager against induced failures) | `docs/planning/part-04-observability.md` | Done |
 | 5 — Automation | `make up` / `make dev` / `make down`, Tilt-orchestrated deployment (`ext://helm_resource`, a real `helm upgrade --install`, not `helm template`), thin Makefile wrapper for cluster lifecycle, fail-loud `preflight.sh`, automated sealing-key mint+reseal, cold-start and idempotency both live-verified | `docs/planning/part-05-automation.md` | Done — merged, promoted (`8b7b9cb`) |
 
@@ -23,7 +23,7 @@ Against `README_HOME_ASSIGNMENT.md`'s literal list.
 | # | Deliverable | Status |
 |---|---|---|
 | 1 | Fixed and hardened application code | Done — Part 1, `docs/issues/001-012, 028-031` |
-| 2 | Issue documentation per bug/issue | Done — `docs/issues/000-030` |
+| 2 | Issue documentation per bug/issue | Done — `docs/issues/000-031` |
 | 3 | Dockerfile(s) | Done — `app/Dockerfile`, `Dockerfile.mock`, `Dockerfile.e2e` |
 | 4 | Kubernetes manifests / Helm chart | Done — `deploy/helm/pokeproxy` |
 | 5 | CI/CD pipeline + post-deploy verification + rollback story | Done — `.github/workflows/ci.yml`, `rollback.yml`, all 3 rollback scenarios executed live |

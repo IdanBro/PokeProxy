@@ -1,4 +1,5 @@
 {{- $spec := .Values.components.pokeproxy }}
+{{- $eFullname := include "pokeproxy.component.fullname" (dict "context" $ "component" "e2e") }}
 {{- if and $spec.enabled .Values.monitoring.enabled }}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
@@ -62,4 +63,26 @@ spec:
               Prometheus cannot find any pokeproxy target reporting up=1,
               which the ratio-based alerts structurally cannot detect on
               their own.
+{{- if .Values.e2e.enabled }}
+        - alert: PokeProxyPostDeployVerificationFailed
+          expr: kube_job_status_failed{namespace="{{ .Release.Namespace }}", job_name="{{ $eFullname }}", condition="true"} > 0
+          for: 5m
+          labels:
+            severity: critical
+            namespace: {{ .Release.Namespace }}
+            service: pokeproxy
+          annotations:
+            summary: "PokeProxy post-deploy E2E verification job failed"
+            description: >-
+              The post-deploy E2E Job ({{ $eFullname }}) that gates every
+              rollout reported Failed. Under Argo CD this hook detects, it
+              does not roll back automatically -- the last sync may be
+              running a functionally broken version right now (see
+              deploy/README.md's Verification and Rollback sections). Check
+              `kubectl logs job/{{ $eFullname }} -n {{ .Release.Namespace }}`
+              for the failed assertion, then `gh workflow run rollback.yml
+              -f sha=<last-good-sha>` if a revert is needed. The Job is
+              reaped after ttlSecondsAfterFinished=3600, so this alert stops
+              firing once it's gone -- read the logs before then.
+{{- end }}
 {{- end }}
