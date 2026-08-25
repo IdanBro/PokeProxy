@@ -24,10 +24,12 @@ spec:
           annotations:
             summary: "PokeProxy server error rate above 5% for {{ .Values.monitoring.highErrorRateFor }}"
             description: >-
-              More than 5% of requests are returning 5xx (internal_error,
-              downstream_error, or downstream_timeout), sustained past the
-              retry budget and a normal rolling deploy. Not a single blip --
-              this has held for the full `for:` window. Check
+              More than 5% of requests are returning 5xx -- outcome
+              internal_error, downstream_error, downstream_timeout or
+              downstream_response_too_large, or a downstream_non_2xx that
+              relayed downstream's own 5xx. Sustained past the retry budget
+              and a normal rolling deploy: not a single blip, this has held
+              for the full `for:` window. Check
               pokeproxy_downstream_requests_total{result!="success"} by rule
               and pod logs for the outcome/status breakdown.
         - alert: PokeProxyCacheBackendErrors
@@ -40,8 +42,8 @@ spec:
           annotations:
             summary: "PokeProxy cache backend (Redis) returning errors"
             description: >-
-              cache.py treats a RedisError as a cache miss by design (M1:
-              Redis must not gate readiness), which makes a dead Redis
+              cache.py treats a RedisError as a cache miss by design, so
+              that Redis cannot gate readiness -- which makes a dead Redis
               silent everywhere except this metric. The service is still
               serving correctly, just without dedup -- downstream load may
               be multiplying by the duplicate ratio. Check the redis pod.

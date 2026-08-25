@@ -58,6 +58,20 @@ def _load_rules(config_path: str) -> list[Rule]:
         raise SystemExit(1) from None
 
 
+def _build_redis_client(settings: Settings) -> aioredis.Redis:
+    try:
+        return aioredis.from_url(
+            settings.redis_url,
+            socket_connect_timeout=settings.redis_connect_timeout_seconds,
+            socket_timeout=settings.redis_socket_timeout_seconds,
+        )
+    except ValueError as e:
+        logger.critical(
+            "REDIS_URL invalid, refusing to start", extra={"error": str(e)}
+        )
+        raise SystemExit(1) from None
+
+
 def _build_http_client(settings: Settings) -> httpx.AsyncClient:
     """Build the shared downstream client.
 
@@ -97,11 +111,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         deadline_seconds=settings.forward_deadline_seconds,
     )
 
-    redis_client = aioredis.from_url(
-        settings.redis_url,
-        socket_connect_timeout=settings.redis_connect_timeout_seconds,
-        socket_timeout=settings.redis_socket_timeout_seconds,
-    )
+    redis_client = _build_redis_client(settings)
     app.state.redis = redis_client
     app.state.cache_ttl_seconds = settings.cache_ttl_seconds
 

@@ -46,8 +46,6 @@ Fresh-clone simulation, run live this session (2026-08-25) as part of Part 5 ste
 | `--atomic` did not roll back | `helm history` shows a clean install, app pods `Running`, no `CreateContainerConfigError` |
 | Second `make up` immediately after (key now present, not minted) | no reseal — `values.yaml` unchanged, confirming the `elif already_sealed()` branch still short-circuits correctly on a normal rerun |
 
-(Exact command transcripts and hashes are in `WORKLOG.md`'s Part 5 "Step 8" entry.)
-
 ## Tradeoffs / Remaining Risk
 
 **This does not fully close F-15.** It closes the specific manifestation Part 5 needs (a clean clone with no key at all, or one freshly provisioned this run). The narrower case F-15's original text names — a key file is *present*, is the *wrong* key (e.g., a stale backup restored from a different environment, or copied between machines), and was **not** minted in this run — is unchanged: `already_sealed()` still only checks "non-empty and ≠ CHANGEME," not decryptability, so that case still silently skips re-sealing and would still fail ~3 minutes later with the same opaque `CreateContainerConfigError`. A real fix for that residual case needs the decrypt-verification option rejected above (or a hash/fingerprint check comparing the sealed key's public half against a value recorded at seal time), and is out of scope here since it isn't Part 5's actual blocker — recorded as a known, narrower gap rather than closed by implication.

@@ -12,7 +12,7 @@ None directly — this is a communication gap, not a code gap. The risk it close
 
 ## Decision
 
-One consolidated document instead of 14 more `docs/issues/NNN-*.md` files. Each of these was reviewed in the same pass as the fixed issues and reasoned about at the time (see `WORKLOG.md`'s "Prioritized backlog" table and, for M2/L3, their own dedicated "deliberately deferred" sections) — a full seven-section write-up per item would mostly restate that reasoning at several times the length. A table plus a short paragraph per item where the reasoning isn't self-evident is the right amount of documentation for "found, not fixed, here's why."
+One consolidated document instead of 14 more `docs/issues/NNN-*.md` files. Each of these was reviewed in the same pass as the fixed issues and reasoned about at the time (see the tables and dedicated write-ups below, and for M2/L3 the "deliberately deferred" reasoning further down this document) — a full seven-section write-up per item would mostly restate that reasoning at several times the length. A table plus a short paragraph per item where the reasoning isn't self-evident is the right amount of documentation for "found, not fixed, here's why."
 
 ## The gaps
 
@@ -27,7 +27,7 @@ One consolidated document instead of 14 more `docs/issues/NNN-*.md` files. Each 
 
 ### Reviewed, root-caused, fix scoped — deliberately not implemented in Part 1
 
-**M2 (app-level half) — body size limit doesn't actually limit.** `stream()` calls `await request.body()`, which fully buffers the request *before* the `len(body) > MAX_BODY_SIZE` check ever runs (`proxy.py:202-206`). A client that omits or lies about `Content-Length` gets its entire payload buffered regardless of size — a real resource-exhaustion vector, not cosmetic. (The `int(content_length)` half of the original finding was disproved during C5: uvicorn's own parser rejects a non-numeric `Content-Length` with its own 400 before the handler runs.) Fix, fully scoped: read via `request.stream()`, count bytes, abort with 413 the moment the running total crosses `MAX_BODY_SIZE`, instead of reading to completion first. Deferred because this class of protection is also standard at the ingress layer (see the Part 2 row above) — the ingress cap is defense-in-depth, not a replacement for this fix, which stays ready to implement whenever it's picked up.
+**M2 (app-level half)** — fixed, see `docs/issues/031-request-body-buffered-before-size-check.md`.
 
 **L3 — error responses carry no correlation ID in the body.** `{"error": "downstream error"}` and similar give support nothing to search on directly, unlike `main.py`'s own `internal_error` handler, which does include `request_id`. Inconsistent, and the one thing "useful error messages" names directly in the assignment that isn't fully met. Fix, fully scoped: inject `request.state.request_id` into the content dict at the 6 call sites already funneled through `proxy.py`'s `_outcome_response()` helper, plus the 2 `JSONResponse` literals in `_forward_request`'s `except` blocks. Deferred rather than fixed because the `X-Request-ID` response *header* already carries the same correlation ID today — this is a body-vs-header convenience gap, not a hard blocker, and was the one Low-severity item in an otherwise Medium/High "should fix" set. A related, separately-decidable question surfaced during review and is also left open: `rejected_signature_missing` and `rejected_signature_invalid` currently return identical body text (`"invalid signature"}`) despite being distinguishable outcomes in the logs.
 
@@ -49,8 +49,8 @@ Found in the same 2026-08-22 audit pass that produced R1/D1; nice-to-have severi
 
 | ID | Problem | Evidence |
 |----|---------|----------|
-| R2 | Expected, *handled* Redis failures log a full traceback each (`cache.py:20,50`, `exc_info=True`) even though the JSON `error` field already carries `ConnectionError: ...`. Measured: **388 of 418 log lines were traceback text** for 8 handled warnings in a single probe run — 93% of log volume for events that are already degraded-gracefully, not crashes. | live probe, see `WORKLOG.md` final audit entry |
-| R3 | A downstream **5xx** is cached and replayed for the full `CACHE_TTL_SECONDS` (`proxy.py:131-142`). `docs/issues/010-cache-becomes-a-dedup-layer.md` justified caching any real downstream response for 4xx business answers; a transient 503 memoized and replayed to every duplicate for 5 minutes even after downstream recovers is a weaker case of the same reasoning | `docs/issues/010-cache-becomes-a-dedup-layer.md:19` |
+| R2 | Expected, *handled* Redis failures log a full traceback each (`cache.py:20,50`, `exc_info=True`) even though the JSON `error` field already carries `ConnectionError: ...`. Measured: **388 of 418 log lines were traceback text** for 8 handled warnings in a single probe run — 93% of log volume for events that are already degraded-gracefully, not crashes. | live probe |
+| R3 | ~~A downstream **5xx** is cached and replayed for the full `CACHE_TTL_SECONDS`.~~ **Resolved** as a side effect of `docs/issues/028` (non-2xx downstream responses are no longer cached at all, not just 5xx) | `docs/issues/028-non-2xx-downstream-responses-treated-as-success.md` |
 | R4 | A config failure emits the intended single `CRITICAL` line and then uvicorn's own ~20-line `SystemExit: 1` lifespan traceback. The actionable line comes first and is correct — this is noise, not a defect | live probe |
 
 ## Tradeoffs / Remaining Risk
@@ -58,4 +58,4 @@ Found in the same 2026-08-22 audit pass that produced R1/D1; nice-to-have severi
 | Item | Disposition |
 |---|---|
 | This document itself will drift if an item is fixed later and the corresponding row isn't removed | Same discipline as `WORKLOG.md`'s backlog table already requires — whichever issue is picked up next should update or remove its row here as part of that change, not leave a stale "known gap" that's actually fixed |
-| Some items above (M2 app-level, L3) already had scoped fixes described in `WORKLOG.md` before this document existed | Consolidated here for discoverability; `WORKLOG.md` keeps the day-by-day narrative, this file is the standing reference a reviewer would look for first |
+| L3 already had a scoped fix described in `WORKLOG.md` before this document existed (M2 app-level's fix is now shipped — see `docs/issues/031`) | Consolidated here for discoverability; day-by-day narrative now lives in `docs/planning/AI_WORKFLOW.md`, this file is the standing reference a reviewer would look for first |

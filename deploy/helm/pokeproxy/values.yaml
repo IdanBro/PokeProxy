@@ -89,7 +89,7 @@ components:
       forwardAttemptTimeoutSeconds: "3.0"
       redisConnectTimeoutSeconds: "2.0"
       redisSocketTimeoutSeconds: "2.0"
-      cacheTtlSeconds: "300.0"
+      cacheTtlSeconds: "300"
     rules:
       - reason: strong fire pokemon
         match: ["type_one==Fire", "attack>80", "generation<4"]

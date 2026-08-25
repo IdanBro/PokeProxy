@@ -49,5 +49,5 @@ The call-count test is the direct regression cover: it patches `main.load_rules`
 
 | Item | Disposition |
 |---|---|
-| Rules are no longer live-reloadable | Deliberate (see Decision). A rules ConfigMap change needs a pod-template checksum annotation or an operator like Reloader to actually roll — already logged in `WORKLOG.md` Backlog / Part 2 |
-| M4 (dedup cache) interacts with this: a payload inside the dedup window is suppressed before routing, so a rules change doesn't affect it until the TTL expires, even after the restart this fix requires | Open, tracked in `WORKLOG.md` |
+| Rules are no longer live-reloadable | Deliberate (see Decision). A rules ConfigMap change needs a pod-template checksum annotation or an operator like Reloader to actually roll — flagged here for Part 2, later closed via the `checksum/config-rules` pod-template annotation (`docs/issues/013-config-assumes-localhost.md`) |
+| M4 (dedup cache) interacts with this: a payload inside the dedup window is suppressed before routing, so a rules change doesn't affect it until the TTL expires, even after the restart this fix requires | Open — see `docs/planning/part-01-production-hardening.md`'s H1/M4 interaction note |

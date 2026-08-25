@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     forward_attempt_timeout_seconds: float = 3.0
     redis_connect_timeout_seconds: float = 2.0
     redis_socket_timeout_seconds: float = 2.0
-    cache_ttl_seconds: float = 300.0
+    cache_ttl_seconds: int = 300
     pokeproxy_revision: str = "unknown"
 
     @field_validator("pokeproxy_hmac_key")
@@ -83,11 +83,11 @@ class Settings(BaseSettings):
         _decode_hmac_key(raw)
         return raw
 
-    @field_validator("forward_max_attempts")
+    @field_validator("forward_max_attempts", "cache_ttl_seconds")
     @classmethod
-    def _check_forward_max_attempts(cls, value: int) -> int:
+    def _check_at_least_one(cls, value: int, info: ValidationInfo) -> int:
         if value < 1:
-            raise ValueError("FORWARD_MAX_ATTEMPTS must be at least 1")
+            raise ValueError(f"{info.field_name.upper()} must be at least 1")
         return value
 
     @field_validator(
@@ -95,7 +95,6 @@ class Settings(BaseSettings):
         "forward_attempt_timeout_seconds",
         "redis_connect_timeout_seconds",
         "redis_socket_timeout_seconds",
-        "cache_ttl_seconds",
     )
     @classmethod
     def _check_positive_seconds(cls, value: float, info: ValidationInfo) -> float:

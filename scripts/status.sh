@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# No -e: this is a read-only status report, and one failing probe should not
+# hide the rest of the picture.
 set -uo pipefail
 
 CLUSTER_NAME="pokeproxy"

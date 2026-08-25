@@ -1,0 +1,15 @@
+{{- $spec := .Values.components.pokeproxy }}
+{{- if and $spec.enabled (gt (int $spec.replicaCount) 1) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "pokeproxy.component.fullname" (dict "context" $ "component" "pokeproxy") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pokeproxy.component.labels" (dict "context" $ "component" "pokeproxy") | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "pokeproxy.component.selectorLabels" (dict "context" $ "component" "pokeproxy") | nindent 6 }}
+{{- end }}

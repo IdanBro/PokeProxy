@@ -52,7 +52,7 @@ This script only provisions a key once per environment. Minting a second one
 without also re-sealing and committing every value already encrypted against
 the first would make the cluster undecryptable the moment Argo CD pulls that
 old ciphertext from git — the exact failure this script exists to prevent
-(F-2 in docs/planning/part-03-cicd-gitops.md).
+(see docs/planning/part-03-cicd-gitops.md).
 
 If you genuinely lost the key and need to rotate it, that is a deliberate,
 manual disaster-recovery act, not a re-run of this script:

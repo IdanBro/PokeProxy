@@ -39,11 +39,7 @@ jobs:
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
       - name: Install kubeconform
-        run: |
-          curl -sSL -o kubeconform.tar.gz https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz
-          echo "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883  kubeconform.tar.gz" | sha256sum -c
-          tar -xzf kubeconform.tar.gz kubeconform
-          sudo mv kubeconform /usr/local/bin/kubeconform
+        uses: ./.github/actions/setup-kubeconform
 
       - name: Resolve digests from GHCR
         id: digests
@@ -64,24 +60,15 @@ jobs:
           echo "e2e=$(resolve pokeproxy-e2e)" >> "$GITHUB_OUTPUT"
 
       - name: Write image tags and digests
-        env:
-          VALUES_FILE: deploy/envs/prod/values.yaml
-          SHA: ${{ inputs.sha }}
-          POKEPROXY_DIGEST: ${{ steps.digests.outputs.pokeproxy }}
-          MOCK_DOWNSTREAM_DIGEST: ${{ steps.digests.outputs.mock_downstream }}
-          E2E_DIGEST: ${{ steps.digests.outputs.e2e }}
-        run: |
-          yq -i '
-            .components.pokeproxy.image.tag = strenv(SHA) |
-            .components.pokeproxy.image.digest = strenv(POKEPROXY_DIGEST) |
-            .components["mock-downstream"].image.tag = strenv(SHA) |
-            .components["mock-downstream"].image.digest = strenv(MOCK_DOWNSTREAM_DIGEST) |
-            .e2e.image.tag = strenv(SHA) |
-            .e2e.image.digest = strenv(E2E_DIGEST)
-          ' "$VALUES_FILE"
-          git diff "$VALUES_FILE"
+        uses: ./.github/actions/write-image-refs
+        with:
+          values-file: deploy/envs/prod/values.yaml
+          tag: ${{ inputs.sha }}
+          pokeproxy-digest: ${{ steps.digests.outputs.pokeproxy }}
+          mock-downstream-digest: ${{ steps.digests.outputs.mock_downstream }}
+          e2e-digest: ${{ steps.digests.outputs.e2e }}
 
-      - name: Validate the rendered chart before committing (F-5)
+      - name: Validate the rendered chart before committing
         run: |
           helm lint --strict deploy/helm/pokeproxy -f deploy/envs/prod/values.yaml
           helm template pokeproxy deploy/helm/pokeproxy \

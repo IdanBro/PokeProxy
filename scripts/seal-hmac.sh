@@ -43,7 +43,24 @@ CONTROLLER_CHART_VERSION="2.19.3"
 APP_NAMESPACE="pokeproxy"
 SECRET_NAME="pokeproxy-hmac"
 SECRET_KEY="POKEPROXY_HMAC_KEY"
-HMAC_VALUE="${POKEPROXY_HMAC_KEY:-dGVzdC1zZWNyZXQtZm9yLWxvY2FsLWRldg==}"
+DEV_HMAC_VALUE="dGVzdC1zZWNyZXQtZm9yLWxvY2FsLWRldg=="
+
+if [[ "$ENVIRONMENT" == "local" ]]; then
+  HMAC_VALUE="${POKEPROXY_HMAC_KEY:-$DEV_HMAC_VALUE}"
+elif [[ -n "${POKEPROXY_HMAC_KEY:-}" ]]; then
+  HMAC_VALUE="$POKEPROXY_HMAC_KEY"
+else
+  cat <<EOF >&2
+POKEPROXY_HMAC_KEY is not set, and '$ENVIRONMENT' has no default.
+
+The local default is a well-known value committed to this repository; sealing it
+for '$ENVIRONMENT' would put a publicly readable secret behind the signature check.
+
+Export a real key first:
+  export POKEPROXY_HMAC_KEY="\$(openssl rand -base64 32)"
+EOF
+  exit 1
+fi
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -94,7 +111,7 @@ if [[ ! -f "$SEALING_KEY_MANIFEST" ]]; then
     cat <<EOF >&2
 No sealing key found at $SEALING_KEY_MANIFEST.
 
-This script no longer mints one for you (F-2, docs/planning/part-03-cicd-gitops.md):
+This script does not mint one for you (see docs/planning/part-03-cicd-gitops.md):
 silently generating a fresh key here would re-seal $VALUES_FILE against a key
 that does not match whatever ciphertext is already committed to git, and for
 '$ENVIRONMENT' that ciphertext is what Argo CD is actually reconciling from —
@@ -109,7 +126,7 @@ EOF
   fi
 
   echo "No sealing key found at $SEALING_KEY_MANIFEST"
-  echo "Minting one for 'local' (P5-1/P5-2, docs/planning/part-05-automation.md D5): unlike prod," \
+  echo "Minting one for 'local': unlike prod," \
        "Helm reads deploy/envs/local/values.yaml from the working tree, not git, so a fresh key here" \
        "is safe as long as we re-seal against it in the same run."
   bash "$REPO_ROOT/scripts/init-sealing-key.sh" --env local >/dev/null

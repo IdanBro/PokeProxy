@@ -1,11 +1,11 @@
 # Values for prometheus-community/kube-prometheus-stack, trimmed for a
-# single-node laptop k3d cluster (Part 4 plan D8). Installed imperatively by
+# single-node laptop k3d cluster. Installed imperatively by
 # scripts/install-monitoring.sh, called from the Tiltfile locally and from
-# scripts/bootstrap-prod.sh for prod -- not an Argo-managed Application (D6).
+# scripts/bootstrap-prod.sh for prod -- not an Argo-managed Application.
 #
 # App-side scrape/alert/dashboard objects (ServiceMonitor, PrometheusRule,
 # dashboard ConfigMap) do NOT live here -- they live in the app's own Helm
-# chart under `monitoring.enabled` (D7), reconciled by Argo in prod.
+# chart under `monitoring.enabled`, reconciled by Argo in prod.
 
 fullnameOverride: kube-prometheus-stack
 
@@ -38,15 +38,15 @@ defaultRules:
     kubeSchedulerRecording: false
 
 prometheus:
-  # Ingress deliberately NOT enabled (A-3). Prometheus's read API has no
-  # auth of its own in this chart -- an Ingress here would put
-  # /api/v1/query, /api/v1/status/config (full scrape config incl. internal
-  # topology) and the /-/reload lifecycle endpoint on the open internet
-  # unauthenticated, confirmed live (all 200 through the ingress before this
-  # was reverted). Same disclosure class docs/issues/025 was just written to
-  # close for the app's own /stats -- would reopen it one layer up, and
-  # bootstrap-prod.sh loads this same file so it'd land in prod too. D4
-  # already keeps the app's own /metrics off the Ingress for the identical
+  # Ingress deliberately NOT enabled. Prometheus's read API has no auth of
+  # its own in this chart -- an Ingress here would put /api/v1/query,
+  # /api/v1/status/config (full scrape config incl. internal topology) and
+  # the /-/reload lifecycle endpoint on the open internet unauthenticated,
+  # confirmed live (all 200 through the ingress before this was reverted).
+  # Same disclosure class docs/issues/025 was written to close for the app's
+  # own /stats -- an Ingress would reopen it one layer up, and
+  # bootstrap-prod.sh loads this same file, so it'd land in prod too. The
+  # app's own /metrics is kept off the Ingress for the identical
   # reason; port-forward (deploy/README.md) is the access path, consistent
   # with that precedent rather than a new exception. Considered a Traefik
   # BasicAuth middleware instead (precedent: helm/pokeproxy/templates/
@@ -59,12 +59,12 @@ prometheus:
   prometheusSpec:
     retention: 6h
     # No storageSpec set -> Prometheus Operator falls back to an emptyDir.
-    # Metrics don't survive a pod restart; the accepted laptop trade-off (D8).
+    # Metrics don't survive a pod restart; the accepted laptop trade-off.
     #
     # Selector*NilUsesHelmValues: false so Prometheus watches ServiceMonitor/
     # PodMonitor/PrometheusRule/Probe objects across all releases and
     # namespaces, not only ones carrying this release's own label. The app
-    # chart's ServiceMonitor/PrometheusRule (D7, separate Helm release) rely
+    # chart's ServiceMonitor/PrometheusRule (a separate Helm release) rely
     # on this to be picked up at all.
     serviceMonitorSelectorNilUsesHelmValues: false
     podMonitorSelectorNilUsesHelmValues: false
@@ -79,7 +79,7 @@ prometheus:
         memory: 512Mi
 
 alertmanager:
-  # Kept enabled (D9) -- the assignment's alert needs to be observably able
+  # Kept enabled -- the assignment's alert needs to be observably able
   # to fire, not just defined.
   alertmanagerSpec:
     retention: 6h
@@ -113,10 +113,10 @@ grafana:
   # both -- acceptable, since nothing here does OAuth/email that would need
   # an exact absolute URL.
   #
-  # Fixed dev-only admin password (A-2, Part 5 audit 2026-08-25). Without
-  # this the subchart's `randAlphaNum` mints a new password on every `helm
-  # upgrade`, changing the admin Secret and rolling the Grafana Deployment
-  # on every idempotent `make up` re-run even when nothing else changed.
+  # Fixed dev-only admin password. Without this the subchart's
+  # `randAlphaNum` mints a new password on every `helm upgrade`, changing
+  # the admin Secret and rolling the Grafana Deployment on every idempotent
+  # `make up` re-run even when nothing else changed.
   # Not a security boundary -- this is a laptop dev cluster, and the Grafana
   # chart's own post-install NOTES print the `kubectl get secret ...`
   # command to read whatever admin password is set, fixed or random.
@@ -129,15 +129,15 @@ grafana:
     dashboards:
       # Sidecar's dashboard folder, confirmed live from the running
       # container's env (FOLDER=/tmp/dashboards); PokeProxy Overview is
-      # provisioned there as pokeproxy-overview.json (A-8). Without this,
+      # provisioned there as pokeproxy-overview.json. Without this,
       # Grafana lands the on-call on a 25-dashboard root-folder search page.
       default_home_dashboard_path: /tmp/dashboards/pokeproxy-overview.json
   # The chart's own Grafana ServiceMonitor scrapes plain `/metrics` by
   # default; serve_from_sub_path above makes Grafana 301 that to
   # http://localhost/grafana/metrics, so without this the target is
-  # permanently `down` (connection refused) and TargetDown fires forever --
-  # confirmed live (A-2). The Prometheus subchart derives its own scrape
-  # path from routePrefix automatically; the Grafana subchart does not.
+  # permanently `down` (connection refused) and TargetDown fires forever.
+  # The Prometheus subchart derives its own scrape path from routePrefix
+  # automatically; the Grafana subchart does not.
   serviceMonitor:
     path: /grafana/metrics
   resources:
@@ -149,14 +149,14 @@ grafana:
       memory: 384Mi
   # 192Mi OOMKilled the grafana container in practice (exit 137, restart-looped)
   # under real dashboard-loading load; `kubectl top pod` showed ~145Mi resident
-  # even before it stabilized. 384Mi verified stable -- see WORKLOG/step-3 report.
+  # even before it stabilized. 384Mi verified stable under that same load.
   # persistence left at chart default (disabled -> emptyDir). Dashboards ship
-  # as ConfigMaps (D7, step 5) and get reloaded by the chart's own sidecar;
+  # as ConfigMaps and get reloaded by the chart's own sidecar;
   # nothing here needs to survive a pod restart.
   sidecar:
     # The two k8s-sidecar containers (dashboard + datasource reload) had no
     # resource caps at all under chart defaults -- ~76Mi and ~72Mi resident
-    # each in practice, unbounded. Capped explicitly, in keeping with D8.
+    # each in practice, unbounded. Capped explicitly, like everything else here.
     resources:
       requests:
         cpu: 10m

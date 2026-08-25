@@ -37,7 +37,7 @@ This doesn't make key loss recoverable — losing the key still permanently unde
 
 ## Verification
 
-Live, isolated, and reversible — see `WORKLOG.md` ("F-2 regression test, isolated and reversible"):
+Live, isolated, and reversible:
 
 | Step | Result |
 |---|---|

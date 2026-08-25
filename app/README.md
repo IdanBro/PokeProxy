@@ -62,7 +62,7 @@ uv run uvicorn pokeproxy.main:app --host 127.0.0.1 --port 8000
 | `FORWARD_ATTEMPT_TIMEOUT_SECONDS` | No | `3.0` | Read/write timeout for a single forward attempt. Must be less than `FORWARD_DEADLINE_SECONDS`, or one slow attempt exhausts the whole budget and `FORWARD_MAX_ATTEMPTS` never gets to retry — the service refuses to start otherwise |
 | `REDIS_CONNECT_TIMEOUT_SECONDS` | No | `2.0` | Timeout establishing a connection to Redis |
 | `REDIS_SOCKET_TIMEOUT_SECONDS` | No | `2.0` | Timeout for a single Redis read/write |
-| `CACHE_TTL_SECONDS` | No | `300.0` | How long a downstream response stays cached for deduplication |
+| `CACHE_TTL_SECONDS` | No | `300` | How long a downstream response stays cached for deduplication |
 | `POKEPROXY_REVISION` | No | `unknown` | Git sha of the running image, baked in at build time. Surfaced as the `pokeproxy_build_info` metric label, so a regression correlates to a deploy on the dashboard |
 
 ### Rules Config
@@ -107,7 +107,14 @@ alerting on — several outcomes share a status code. Current values:
 `forwarded`, `duplicate_suppressed`, `no_rule_matched`,
 `rejected_signature_missing`, `rejected_signature_invalid`,
 `rejected_protobuf`, `rejected_too_large`, `downstream_timeout`,
-`downstream_error`, `internal_error`.
+`downstream_error`, `downstream_non_2xx`,
+`downstream_response_too_large`, `internal_error`.
+
+`downstream_error` means no response was ever obtained (connection failure,
+retries exhausted) and the client gets a synthetic 502. `downstream_non_2xx`
+means downstream answered and that answer is relayed verbatim — the status the
+client sees is downstream's own. Only the former is the proxy failing to reach
+its dependency.
 
 `no_rule_matched` returns HTTP 200 with an empty body, so it is only
 distinguishable from a successful forward by this field. `duplicate_suppressed`

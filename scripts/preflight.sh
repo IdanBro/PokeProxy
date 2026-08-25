@@ -70,7 +70,6 @@ require_tool kubeseal "https://github.com/bitnami-labs/sealed-secrets#installati
 require_tool git "https://git-scm.com/downloads"
 if [[ "$ENVIRONMENT" == "local" ]]; then
   require_tool tilt "https://docs.tilt.dev/install.html"
-  require_tool jq "https://jqlang.org/download/"
 fi
 
 require_version docker "$(docker_client_version)" "20.10.0" "https://docs.docker.com/get-docker/"

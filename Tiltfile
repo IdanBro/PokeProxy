@@ -3,31 +3,20 @@ load('ext://uibutton', 'cmd_button', 'location', 'text_input')
 
 allow_k8s_contexts('k3d-pokeproxy')
 
-# >= helm's own --timeout=3m (180s) + the post-install E2E hook's
-# activeDeadlineSeconds: 180, both inside the one process Tilt is timing.
-# 240s already caused a real pending-upgrade incident once (step 1, see
-# WORKLOG) with only ~1x margin; 480s gives real headroom.
+# Must exceed helm's own --timeout=4m, which runs inside the single process
+# Tilt is timing. 240s left almost no margin and produced a stuck
+# pending-upgrade.
 update_settings(k8s_upsert_timeout_secs=480)
 
 NAMESPACE = 'pokeproxy'
 RELEASE = 'pokeproxy'
 GIT_SHA = str(local('git rev-parse --short HEAD')).strip()
 
-# No default_registry() call: Tilt auto-detects the k3d registry itself and
-# logs that it ignores an explicit setting here -- confirmed live, the
-# k3d-prefixed hostname a prior version of this line used
-# ('k3d-pokeproxy-registry:5000') was also wrong; the real one is
-# 'pokeproxy-registry:5000', no 'k3d-' prefix.
+# No default_registry(): Tilt auto-detects the k3d registry and logs that it
+# ignores an explicit setting here.
 
 k8s_yaml('deploy/k8s/namespace.yaml')
 k8s_resource(new_name='namespace', objects=['pokeproxy:namespace'])
-
-# Sealing-key mint-and-reseal (P5-1/P5-2, seal-hmac.sh) runs in scripts/up.sh
-# before Tilt even starts, not as a Tilt resource -- same pattern as
-# preflight.sh. It's a one-shot, idempotent prerequisite, not something that
-# benefits from Tilt's live-reload/re-trigger UI, and running it here means
-# `tilt up`/`tilt dev` re-execute it on every restart of a long-lived
-# interactive session, not just once per bootstrap.
 
 local_resource(
     'monitoring',
@@ -64,14 +53,13 @@ docker_build(
     only=['e2e'],
 )
 
-# NOTE: k8s_resource(objects=[...], new_name=...) does NOT work here.
-# Verified live: it errored at Tiltfile-load time with "Possible objects
-# are:" (empty) because k8s_custom_deploy (what ext://helm_resource wraps)
-# only knows its objects *after* apply_cmd runs at build time; the object
-# list is not available during Tiltfile static evaluation the way it is for
-# k8s_yaml(). Real per-workload Tilt resources come from the local_resource
-# shims below instead: status-only, read-only against the cluster, never a
-# second applier of the chart's objects.
+# ext://helm_resource runs a real `helm upgrade --install`, so --atomic and the
+# post-install E2E hook stay a deployment gate. Tilt's built-in helm() is
+# `helm template`: no release, no hooks, no rollback.
+#
+# k8s_resource(objects=[...]) cannot split this into per-workload resources --
+# the object list only exists after apply_cmd runs, not during Tiltfile
+# evaluation. The read-only local_resource shims below fill that gap instead.
 helm_resource(
     'pokeproxy-helm',
     'deploy/helm/pokeproxy',
@@ -80,7 +68,7 @@ helm_resource(
     flags=[
         '-f', 'deploy/envs/local/values.yaml',
         '--set', 'e2e.enabled=true',
-        '--atomic', '--timeout=3m',
+        '--atomic', '--timeout=4m',
     ],
     image_deps=['pokeproxy', 'mock-downstream', 'pokeproxy-e2e'],
     image_keys=[
@@ -106,24 +94,8 @@ workload_status_resource('pokeproxy', 'pokeproxy', 'pokeproxy')
 workload_status_resource('redis', 'pokeproxy-redis', 'redis')
 workload_status_resource('mock-downstream', 'pokeproxy-mock-downstream', 'mock-downstream')
 
-local_resource(
-    'e2e',
-    cmd=['bash', 'scripts/run-e2e-now.sh'],
-    resource_deps=['pokeproxy-helm'],
-    auto_init=False,
-    labels=['debug'],
-)
-
-# Auto (not auto_init=False), unlike `e2e` above: this is deploy.sh's old
-# step-7 external-reachability probe (`curl localhost:8080/stream`, host
-# network through k3d's port mapping), which nothing else in this Tiltfile
-# replaces automatically -- the real E2E gate lives inside the Helm
-# post-install hook via --atomic and only exercises the *in-cluster* Traefik
-# path. Depends on `pokeproxy-helm` directly, not `e2e`: an auto resource
-# depending on an auto_init=False one sits blocked forever waiting for a
-# trigger that never comes on its own (confirmed live in step 5 -- `tilt
-# get uiresources ingress-probe` showed `waiting-for-dep` on `e2e` until
-# manually triggered), so `tilt ci` would hang without this.
+# The Helm post-install E2E hook only exercises the in-cluster path. This is the
+# external one: host network, through k3d's port mapping into Traefik.
 local_resource(
     'ingress-probe',
     cmd=['bash', '-c',
@@ -136,7 +108,7 @@ cmd_button(
     'send-signed-traffic',
     resource='pokeproxy',
     argv=['bash', '-c',
-          'cd app && .venv/bin/python3 scripts/load_generator.py --url http://localhost:8080/stream --rps "$RPS" --duration "$DURATION"'],
+          'cd app && uv run python scripts/load_generator.py --url http://localhost:8080/stream --rps "$RPS" --duration "$DURATION"'],
     location=location.RESOURCE,
     icon_name='bolt',
     text='Send signed traffic',
@@ -144,15 +116,6 @@ cmd_button(
         text_input('RPS', label='Requests/sec', default='10'),
         text_input('DURATION', label='Duration (s)', default='10'),
     ],
-)
-
-cmd_button(
-    'run-e2e-now',
-    resource='e2e',
-    argv=['tilt', 'trigger', 'e2e'],
-    location=location.RESOURCE,
-    icon_name='play_arrow',
-    text='Run E2E now',
 )
 
 cmd_button(
@@ -170,7 +133,7 @@ cmd_button(
     argv=['bash', 'scripts/break-rules.sh'],
     location=location.RESOURCE,
     icon_name='report',
-    text='Break rules.json (scenario B)',
+    text='Break rules.json (rollback demo)',
     requires_confirmation=True,
 )
 

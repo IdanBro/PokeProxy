@@ -31,7 +31,16 @@ class RetryPolicy:
     deadline_seconds: float
 
 
-ALLOWED_FORWARD_HEADERS: frozenset[str] = frozenset()
+@dataclass(frozen=True)
+class DownstreamResponse:
+    status_code: int
+    headers: httpx.Headers
+    content: bytes
+
+
+class DownstreamResponseTooLarge(Exception):
+    pass
+
 
 HOP_BY_HOP_RESPONSE_HEADERS = frozenset({
     "connection",
@@ -52,18 +61,12 @@ def verify_signature(secret: bytes, body: bytes, signature: str) -> bool:
     return hmac.compare_digest(expected, signature)
 
 
-def _build_forward_headers(
-    original_headers: dict[str, str], reason: str, request_id: str
-) -> dict[str, str]:
-    headers: dict[str, str] = {
-        k: v
-        for k, v in original_headers.items()
-        if k.lower() in ALLOWED_FORWARD_HEADERS
+def _build_forward_headers(reason: str, request_id: str) -> dict[str, str]:
+    return {
+        "Content-Type": "application/json",
+        "X-Grd-Reason": reason,
+        REQUEST_ID_HEADER: request_id,
     }
-    headers["Content-Type"] = "application/json"
-    headers["X-Grd-Reason"] = reason
-    headers[REQUEST_ID_HEADER] = request_id
-    return headers
 
 
 def _forwardable_response_headers(headers: httpx.Headers) -> dict[str, str]:
@@ -76,6 +79,24 @@ def _next_backoff_delay(previous_delay: float, cap: float = 30.0) -> float:
     return min(previous_delay * 2 * (0.5 + random.random()), cap)  # noqa: S311
 
 
+async def _read_response_within_limit(resp: httpx.Response) -> bytes | None:
+    """Read a downstream response body, returning None once it exceeds MAX_BODY_SIZE.
+
+    Mirrors `_read_body_within_limit` for the inbound request — the response
+    is streamed and measured chunk by chunk instead of buffered via
+    `resp.content`, so an oversized downstream body is never fully held in
+    memory.
+    """
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in resp.aiter_bytes():
+        size += len(chunk)
+        if size > MAX_BODY_SIZE:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 async def _forward_with_retry(
     client: httpx.AsyncClient,
     policy: RetryPolicy,
@@ -86,13 +107,25 @@ async def _forward_with_retry(
     rule_label: str,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-) -> httpx.Response:
+) -> DownstreamResponse:
     deadline = clock() + policy.deadline_seconds
     delay = 0.1
 
     for attempt in range(1, policy.max_attempts + 1):
         try:
-            return await client.post(url, content=content, headers=headers)
+            request = client.build_request("POST", url, content=content, headers=headers)
+            resp = await client.send(request, stream=True)
+            try:
+                body = await _read_response_within_limit(resp)
+            finally:
+                await resp.aclose()
+            if body is None:
+                raise DownstreamResponseTooLarge(
+                    f"downstream response exceeded {MAX_BODY_SIZE} bytes"
+                )
+            return DownstreamResponse(
+                status_code=resp.status_code, headers=resp.headers, content=body
+            )
         except RETRYABLE_ERRORS:
             attempts_exhausted = attempt == policy.max_attempts
             deadline_exceeded = clock() >= deadline
@@ -109,16 +142,14 @@ async def _forward_request(
     request: Request,
     rule: Rule,
     pokemon: PokemonJSON,
-    original_headers: dict[str, str],
     metrics: Metrics,
     cache_key: str,
 ) -> Response:
     json_bytes = pokemon.model_dump_json().encode()
-    headers = _build_forward_headers(
-        original_headers, rule.reason, request.state.request_id
-    )
+    headers = _build_forward_headers(rule.reason, request.state.request_id)
 
     start = time.monotonic()
+    result_label = "error"
 
     try:
         resp = await _forward_with_retry(
@@ -131,38 +162,57 @@ async def _forward_request(
             rule.reason,
         )
 
+        is_downstream_success = 200 <= resp.status_code < 300
+        result_label = "success" if is_downstream_success else "error"
         metrics.downstream_requests_total.labels(
-            rule=rule.reason, result="success"
+            rule=rule.reason, result=result_label
         ).inc()
 
-        request.state.outcome = "forwarded"
         response_headers = _forwardable_response_headers(resp.headers)
-        await cache_response(
-            request.app.state.redis,
-            cache_key,
-            resp.status_code,
-            response_headers,
-            resp.content,
-            request.app.state.cache_ttl_seconds,
-            metrics,
-        )
+
+        if is_downstream_success:
+            request.state.outcome = "forwarded"
+            await cache_response(
+                request.app.state.redis,
+                cache_key,
+                resp.status_code,
+                response_headers,
+                resp.content,
+                request.app.state.cache_ttl_seconds,
+                metrics,
+            )
+        else:
+            request.state.outcome = "downstream_non_2xx"
+
         return Response(
             content=resp.content,
             status_code=resp.status_code,
             headers=response_headers,
         )
     except httpx.TimeoutException:
+        result_label = "timeout"
         metrics.downstream_requests_total.labels(
-            rule=rule.reason, result="timeout"
+            rule=rule.reason, result=result_label
         ).inc()
         request.state.outcome = "downstream_timeout"
         return JSONResponse(
             content={"error": "downstream timeout"},
             status_code=504,
         )
-    except httpx.HTTPError:
+    except DownstreamResponseTooLarge:
+        result_label = "error"
         metrics.downstream_requests_total.labels(
-            rule=rule.reason, result="error"
+            rule=rule.reason, result=result_label
+        ).inc()
+        request.state.outcome = "downstream_response_too_large"
+        return JSONResponse(
+            content={"error": "downstream response too large"},
+            status_code=502,
+        )
+    except httpx.HTTPError:
+        result_label = "error"
+        metrics.downstream_requests_total.labels(
+            rule=rule.reason, result=result_label
         ).inc()
         request.state.outcome = "downstream_error"
         return JSONResponse(
@@ -171,7 +221,26 @@ async def _forward_request(
         )
     finally:
         elapsed = time.monotonic() - start
-        metrics.downstream_duration_seconds.labels(rule=rule.reason).observe(elapsed)
+        metrics.downstream_duration_seconds.labels(
+            rule=rule.reason, result=result_label
+        ).observe(elapsed)
+
+
+async def _read_body_within_limit(request: Request) -> bytes | None:
+    """Read the request body, returning None once it exceeds MAX_BODY_SIZE.
+
+    Enforced while streaming rather than after `request.body()`, so a chunked
+    or Content-Length-less request cannot buffer an arbitrary payload into
+    memory before the limit is checked.
+    """
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_BODY_SIZE:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _outcome_response(
@@ -197,14 +266,8 @@ def _duplicate_response(request: Request, cached: dict[str, object]) -> Response
 async def stream(request: Request) -> Response:
     metrics: Metrics = request.app.state.metrics
 
-    content_length = request.headers.get("content-length")
-    if content_length and int(content_length) > MAX_BODY_SIZE:
-        return _outcome_response(
-            request, "rejected_too_large", {"error": "payload too large"}, 413
-        )
-
-    body = await request.body()
-    if len(body) > MAX_BODY_SIZE:
+    body = await _read_body_within_limit(request)
+    if body is None:
         return _outcome_response(
             request, "rejected_too_large", {"error": "payload too large"}, 413
         )
@@ -241,8 +304,4 @@ async def stream(request: Request) -> Response:
     if matched_rule is None:
         return _outcome_response(request, "no_rule_matched", {}, 200)
 
-    original_headers: dict[str, str] = dict(request.headers)
-
-    return await _forward_request(
-        request, matched_rule, pokemon, original_headers, metrics, cache_key
-    )
+    return await _forward_request(request, matched_rule, pokemon, metrics, cache_key)

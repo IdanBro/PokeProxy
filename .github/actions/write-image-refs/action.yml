@@ -1,0 +1,40 @@
+name: Write image tags and digests
+description: Write pokeproxy/mock-downstream/e2e image tag and digest fields into a Helm values file.
+
+inputs:
+  values-file:
+    description: Path to the values.yaml file to edit
+    required: true
+  tag:
+    description: Image tag to write for all three components
+    required: true
+  pokeproxy-digest:
+    description: Digest for the pokeproxy image
+    required: true
+  mock-downstream-digest:
+    description: Digest for the mock-downstream image
+    required: true
+  e2e-digest:
+    description: Digest for the pokeproxy-e2e image
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        VALUES_FILE: ${{ inputs.values-file }}
+        TAG: ${{ inputs.tag }}
+        POKEPROXY_DIGEST: ${{ inputs.pokeproxy-digest }}
+        MOCK_DOWNSTREAM_DIGEST: ${{ inputs.mock-downstream-digest }}
+        E2E_DIGEST: ${{ inputs.e2e-digest }}
+      run: |
+        yq -i '
+          .components.pokeproxy.image.tag = strenv(TAG) |
+          .components.pokeproxy.image.digest = strenv(POKEPROXY_DIGEST) |
+          .components["mock-downstream"].image.tag = strenv(TAG) |
+          .components["mock-downstream"].image.digest = strenv(MOCK_DOWNSTREAM_DIGEST) |
+          .e2e.image.tag = strenv(TAG) |
+          .e2e.image.digest = strenv(E2E_DIGEST)
+        ' "$VALUES_FILE"
+        git diff "$VALUES_FILE"
