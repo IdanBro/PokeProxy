@@ -124,7 +124,7 @@ Every ratio alert is silent when there are zero scrape targets. A crashed pod em
 
 **`no_rule_matched` rate.** Entirely a function of the traffic mix and `rules.json` — neither is something the service controls or can be "wrong" about. A healthy PokeProxy fed a stream with no Fire-types correctly matches and forwards nothing. A spike means the upstream population shifted or someone edited rules — a product/config question for business hours, not a 3AM action. Any threshold here is a guess about traffic composition dressed as an SLO. Stays prominent on the dashboard (row 2, panel 5) so it's visible while debugging something else, just not paged on.
 
-**Runner-up: cache hit rate.** Also traffic-shaped (the load generator's fixed payload set already skews it, per the WORKLOG's M4 note), and more importantly a lagging, ambiguous proxy for "Redis is broken" when the direct cause (`cache_operations_total{result="error"}`) is already alertable. Alert on the cause, graph the symptom.
+**Runner-up: cache hit rate.** Also traffic-shaped (the load generator's fixed payload set already skews it, per `docs/planning/part-01-production-hardening.md`'s M4 note), and more importantly a lagging, ambiguous proxy for "Redis is broken" when the direct cause (`cache_operations_total{result="error"}`) is already alertable. Alert on the cause, graph the symptom.
 
 ## Tradeoffs
 

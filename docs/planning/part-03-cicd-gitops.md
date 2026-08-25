@@ -96,7 +96,7 @@ No ownership conflict between Helm and Argo CD: they own different clusters.
 | Registry | **GHCR** `ghcr.io/idanbro/*` | repo is public, so the packages can be public and the cluster pulls anonymously — no imagePullSecret. Docker Hub would mean a managed credential plus anonymous pull-rate limits on every pod restart |
 | CD | **Argo CD**, one Application, Helm source | pull-based, egress-only, has a UI that makes reconciliation demonstrable |
 | Desired state | `deploy/envs/prod/values.yaml`, same repo | one clonable artifact; `GITHUB_TOKEN` pushes do not trigger workflows, so recursion is structurally prevented |
-| Image scanning | **Trivy**, `severity HIGH,CRITICAL`, `ignore-unfixed`, `exit-code 1` | `ignore-unfixed` because failing on a vulnerability with no available fix trains people to ignore the gate. Documented exceptions go in `.trivyignore` |
+| Image scanning | **Trivy**, `severity HIGH,CRITICAL`, `ignore-unfixed`, `exit-code 1` | `ignore-unfixed` because failing on a vulnerability with no available fix trains people to ignore the gate. Documented exceptions would go in `app/.trivyignore`; none has ever been needed, so no such file is committed |
 | Attestation | buildx `sbom: true`, `provenance: mode=max` | two lines; SLSA provenance and an SBOM attached to the image |
 | Signing | **cosign**, keyless via GitHub OIDC | no key material to manage; pairs naturally with digest pinning |
 | Dependency updates | **Dependabot** — `github-actions`, `docker` | digest-pinned base images are unmaintainable without a bot. Trading drift for staleness is not a fix |
@@ -133,8 +133,8 @@ Chose Argo CD anyway, for three reasons. The assignment names it. Its UI makes "
       v   GitHub Actions - never touches a cluster
  +---------------------------------------------------------------+
  | lint      ruff check                                           |
- | test      pytest (106)                                         |
- | chart-lint  helm lint --strict | kubeconform   (UNGATED - F-4)  |
+ | test      pytest                                               |
+ | chart-lint  helm lint --strict | kubeconform  (gates promote)  |
  |   +--> build    buildx x3 -> GHCR :<short-sha>
  |         |        sbom: true, provenance: mode=max
  |         +--> scan     trivy, HIGH/CRITICAL, ignore-unfixed
@@ -180,7 +180,7 @@ Publishing happens before scanning deliberately: the sha tag is immutable and no
 app/
   e2e/e2e_check.py                  NEW   the one verification script
   Dockerfile.e2e                    NEW   FROM the app image + COPY
-  .trivyignore                      NEW   documented scan exceptions (empty to start)
+  .trivyignore                      NEW   documented scan exceptions (empty to start; removed in the final cleanup pass, never populated)
 deploy/
   helm/pokeproxy/
     values.yaml                     MOD   defaults only; + e2e block, + image.digest
@@ -230,12 +230,12 @@ docs/
 
 | # | Step | Size | State |
 |---|---|---|---|
-| 1 | CI lint + test (`.github/workflows/ci.yml`), Dependabot, planning doc, WORKLOG | S | **Done** — verified live on PR #3, see WORKLOG |
-| 2 | CI build + push to GHCR with SBOM/provenance, Trivy scan, cosign signing | M | **Done** — verified live on PR #3, see WORKLOG |
-| 3 | **E2E: script, derived image, hook Job, 3 NetworkPolicy rules** — proven on the existing dev cluster | **L** | **Done** — verified live, see WORKLOG |
-| 4 | Prod stand-in cluster + Argo CD + `deploy/envs/` move (closes S4, N7) | M–L | **Done** — split 4a/4b, verified live, see WORKLOG |
-| 5 | CI promote job with the production Environment; measure commit to serving | S–M | **Done** — verified live via PR #4, see WORKLOG |
-| 6 | `rollback.yml` plus all three failure scenarios executed | M | **Done** — verified live, see WORKLOG |
+| 1 | CI lint + test (`.github/workflows/ci.yml`), Dependabot, planning doc, WORKLOG | S | **Done** — verified live on PR #3, see Step 1 detail below |
+| 2 | CI build + push to GHCR with SBOM/provenance, Trivy scan, cosign signing | M | **Done** — verified live on PR #3, see Step 2 detail below |
+| 3 | **E2E: script, derived image, hook Job, 3 NetworkPolicy rules** — proven on the existing dev cluster | **L** | **Done** — verified live, see Step 3 detail below |
+| 4 | Prod stand-in cluster + Argo CD + `deploy/envs/` move (closes S4, N7) | M–L | **Done** — split 4a/4b, verified live, see Step 4 detail below |
+| 5 | CI promote job with the production Environment; measure commit to serving | S–M | **Done** — verified live via PR #4, see Step 5 detail below |
+| 6 | `rollback.yml` plus all three failure scenarios executed | M | **Done** — verified live, see Step 6 detail below and `deploy/README.md`'s Rollback section |
 | 7 | Issue write-ups, `deploy/README.md`, WORKLOG, AI_WORKFLOW | M | **Done** — `docs/issues/021-024`, `deploy/README.md` and `WORKLOG.md` updated throughout this Part; AI_WORKFLOW session note appended |
 
 Step 3 sits before step 4 deliberately: the E2E is the highest-value and highest-risk piece, it is fully provable on the cluster that already exists, and it stands on its own even if the prod cluster never happens.
@@ -260,11 +260,11 @@ Branch protection on `main` requiring these two checks is configured in the GitH
 
 Login with `GITHUB_TOKEN`; buildx; two images from `app/`; `platforms: linux/amd64`; `sbom: true`, `provenance: mode=max`. Tag `ghcr.io/idanbro/<image>:${GITHUB_SHA:0:7}`. No `latest`, no moving tags. `type=gha` cache with a distinct scope per image. `build-args: GIT_SHA=${{ github.sha }}` — the **full** sha, because `org.opencontainers.image.revision` is conventionally full; `deploy.sh` changes to match so dev and CI images carry identical labels. Digests captured as job outputs for step 5.
 
-Then Trivy against the pushed digest, `severity: HIGH,CRITICAL`, `ignore-unfixed: true`, `exit-code: 1`, with an initially empty `app/.trivyignore` for documented exceptions. Then `cosign sign --yes <repo>@<digest>`, keyless.
+Then Trivy against the pushed digest, `severity: HIGH,CRITICAL`, `ignore-unfixed: true`, `exit-code: 1`. No `app/.trivyignore` is committed — no documented exception has ever been needed; one would live there if that changed. Then `cosign sign --yes <repo>@<digest>`, keyless.
 
 **One manual action, mine to request and the operator's to perform:** after the first successful push, flip both GHCR packages to public in the GitHub UI. Packages are created private even from a public repo, and the prod cluster will `ImagePullBackOff` otherwise.
 
-**Verification.** `docker pull ghcr.io/idanbro/pokeproxy@sha256:<digest>` anonymously from WSL; `docker inspect` to confirm the revision label equals the commit; `cosign verify` against the published digest with the expected OIDC issuer and identity; `docker buildx imagetools inspect` to confirm the SBOM and provenance attestations are attached; second run compared for a warm buildx cache. A deliberate `.trivyignore` removal to confirm the scan gate can actually fail the job.
+**Verification.** `docker pull ghcr.io/idanbro/pokeproxy@sha256:<digest>` anonymously from WSL; `docker inspect` to confirm the revision label equals the commit; `cosign verify` against the published digest with the expected OIDC issuer and identity; `docker buildx imagetools inspect` to confirm the SBOM and provenance attestations are attached; second run compared for a warm buildx cache. A deliberate edit to `.trivyignore` at the time (since deleted for good — it was never otherwise populated) to confirm the scan gate can actually fail the job.
 
 ### Step 3 — E2E check
 
@@ -339,7 +339,7 @@ The Application: `repoURL https://github.com/IdanBro/PokeProxy`, `targetRevision
 
 `needs: [build-pokeproxy, build-mock-downstream, build-e2e]` as shipped (the design said `needs: [scan, sign]`, but scan and sign are steps inside the build jobs, not jobs of their own), `if: github.ref == 'refs/heads/main'`, `permissions: contents: write`, `environment: production` for the deployment record, `concurrency: promote` so two merges cannot race. yq writes six fields — tag and digest for pokeproxy, mock-downstream and e2e — into `deploy/envs/prod/values.yaml`. Commits as `github-actions[bot]`, subject `chore(deploy): promote <sha>`, digests in the body, `git pull --rebase` then push.
 
-With branch protection now on (D11), this job needs a bypass. **Corrected after implementation:** the ruleset exemption this paragraph originally proposed is impossible here — GitHub rejects an `Integration`-type bypass actor on a user-owned repo (*Actor GitHub Actions integration must be part of the ruleset source or owner organization*). What shipped is a fine-grained PAT (`Contents: Read and write`, this repo only) fed to `actions/checkout`'s `token:` input, plus `[skip ci]` on the promote commit, because a PAT push is *not* exempt from retriggering CI the way `GITHUB_TOKEN` is. Full account in `WORKLOG.md` and `deploy/README.md`.
+With branch protection now on (D11), this job needs a bypass. **Corrected after implementation:** the ruleset exemption this paragraph originally proposed is impossible here — GitHub rejects an `Integration`-type bypass actor on a user-owned repo (*Actor GitHub Actions integration must be part of the ruleset source or owner organization*). What shipped is a fine-grained PAT (`Contents: Read and write`, this repo only) fed to `actions/checkout`'s `token:` input, plus `[skip ci]` on the promote commit, because a PAT push is *not* exempt from retriggering CI the way `GITHUB_TOKEN` is. Full account in `docs/issues/024-branch-protection-pat.md` and `deploy/README.md`.
 
 **Verification.** Merge a trivial app change and follow the whole chain. Confirm the promote commit did **not** trigger a second CI run. Confirm the digest in git equals `kubectl get pod -o jsonpath=...` on the prod cluster. Measure and record **commit to serving** in seconds; that number belongs in the README as a measurement, not a claim. Framed against DORA where it maps cleanly: this is lead time for changes, and step 6's scenarios exercise change failure rate and MTTR.
 
@@ -415,19 +415,19 @@ Not building it: it needs a GitHub write token living inside the cluster, and it
 
 ## Definition of done for Part 3
 
-Status as of the 2026-08-23 requirement audit (below). Evidence for every **Done** row is in `WORKLOG.md`.
+Status as of the 2026-08-23 requirement audit (below). Evidence for each **Done** row is inline in the table.
 
 | # | Item | State |
 |---|---|---|
 | 1 | CI green on real GitHub Actions across lint, test, build, scan, sign and promote, run URLs recorded | **Done** — runs [32640298921](https://github.com/IdanBro/PokeProxy/actions/runs/32640298921) (6/6) and [32645019846](https://github.com/IdanBro/PokeProxy/actions/runs/32645019846) (promote 7/7) |
-| 2 | Branch protection on `main` requires the CI checks | **Not done** — `required_status_checks` carries no contexts, so a red PR can still merge. Not re-verified during the audit (`gh` is not on PATH in that shell); rests on WORKLOG's record |
+| 2 | Branch protection on `main` requires the CI checks | **Not done** — `required_status_checks` carries no contexts, so a red PR can still merge. Not independently re-checked this pass (`gh` is not on PATH in that shell) |
 | 3 | Three images in GHCR at short-sha tags, anonymously pullable by digest, with SBOM + provenance, `cosign verify`-able | **Done** — checked with a locally installed `cosign v3.1.3` and `buildx imagetools inspect`, not by trusting the CI step's exit code |
 | 4 | The Trivy gate proven able to fail the job, not merely present | **Done** — its first real run failed on genuine HIGH CVEs (`setuptools` CVE-2025-47273; `starlette` CVE-2026-48818 / CVE-2026-54283) |
 | 5 | Prod cluster reconciled by Argo CD from `main`, pods verifiably running GHCR digests | **Done** — `spec` and `status.imageID` both digest-pinned |
 | 6 | PostSync E2E sends real protobuf and HMAC through the ingress and validates the mock downstream result, passing, with logs captured | **Done** — read from Argo's own `operationState`, corroborated by the unique record in the mock's `/received` |
 | 7 | The dev path still works after the values move | **Done** — render byte-identical before/after; `deploy.sh` green at revision 11 |
 | 8 | Commit to serving measured and recorded | **Done, with a stated caveat** — 155s, but Argo's refresh was force-triggered rather than left to the 30s poll. The passive-path number is still unmeasured |
-| 9 | All three rollback scenarios executed with captured output | **Done, live, 2026-08-23** — A, B and C all executed with captured evidence. See WORKLOG ("Step 6 scenarios A and B", "Scenario C — executed live") |
+| 9 | All three rollback scenarios executed with captured output | **Done, live, 2026-08-23** — A, B and C all executed with captured evidence, see `deploy/README.md`'s Rollback section |
 | 10 | S4 and N7 closed with write-ups | **Done** — `docs/issues/021-values-prod-undeployable.md`, `022-seal-hmac-wholesale-rewrite.md`; plus `023` (F-2 sealing-key redesign) and `024` (branch-protection/PAT) written up the same day |
 | 11 | Anything not verified by execution is labelled as not verified | **Held** — including in this table |
 
@@ -440,10 +440,10 @@ One hypothetical commit traced end to end against `README_HOME_ASSIGNMENT.md` Pa
 | Stage | Mechanism | Evidence | Verdict |
 |---|---|---|---|
 | PR opened | `ci.yml` `on: pull_request` → lint, test, chart-lint, build ×3 | `.github/workflows/ci.yml:1` | real, runnable, verified live |
-| Merge gate | branch protection: a PR is required, but **no required check contexts** | WORKLOG, not re-verified | gap — DoD #2, F-11 |
+| Merge gate | branch protection: a PR is required, but **no required check contexts** | not independently re-verified this pass | gap — DoD #2, F-11 |
 | Push to `main` | same workflow; buildx → GHCR `:<short-sha>`, digest captured as a job output | `ci.yml:79`, `:125`, `:171` | real |
 | Scan + sign | Trivy by digest after push; cosign keyless via OIDC | `ci.yml:110`, `:121` | real; gate proven able to fail |
-| Chart validation | `helm lint --strict` + kubeconform over both env values files | `ci.yml:51` | real, but **gates nothing** — F-4 |
+| Chart validation | `helm lint --strict` + kubeconform over both env values files | `ci.yml:51` | real, and gates `promote` — F-4 fixed |
 | Desired-state change | `promote`: yq writes six tag/digest fields, commits `[skip ci]` via PAT, pushes to `main` | `ci.yml:215` | real, verified live |
 | Reconcile | Argo CD Application, `targetRevision: main`, 30s poll, `prune` + `selfHeal`, `retry.limit: 3` | `deploy/argocd/application.yaml` | real, verified live |
 | Rollout | `maxUnavailable: 0` plus readiness probe | `deploy/helm/pokeproxy/templates/pokeproxy/deployment.yaml:13` | real, verified in Part 2 step 9 |
@@ -457,15 +457,15 @@ One hypothetical commit traced end to end against `README_HOME_ASSIGNMENT.md` Pa
 
 **F-2 — the prod HMAC secret cannot be reconstituted on any machine but this one, and under GitOps that is fatal rather than inconvenient.** `.secrets/` is gitignored. On a clean clone, `seal-hmac.sh --env prod` mints a new key (`scripts/seal-hmac.sh:110`) and re-seals `deploy/envs/prod/values.yaml` **in the working tree** (`scripts/seal-hmac.sh:157`). Argo CD reads the *committed* file from GitHub, whose ciphertext was sealed against a key that cluster does not have, so the controller cannot decrypt it, `pokeproxy-hmac` is never created, `envFrom.secretRef` is not optional (`templates/pokeproxy/deployment.yaml:48`), pods stick in `CreateContainerConfigError`, the Application never reaches Healthy, and `bootstrap-prod.sh` exits 1 after 600s.
 
-`WORKLOG.md`'s backlog calls this "the same accepted trade-off already documented for dev." **That framing is wrong.** In dev, Helm reads the re-sealed working tree, so the re-seal works. In prod, Argo reads git, so it cannot. Different failure mode, different severity. It blocks a reviewer reproducing the GitOps demo and it blocks Part 5's clean-machine one-command bootstrap. Candidate fixes: have `seal-hmac.sh --env prod` refuse to mint a fresh key while the committed values file already carries a ciphertext, telling the operator to restore the key or re-seal **and commit**; or commit the public cert half so sealing does not require a live cluster.
+An earlier framing called this "the same accepted trade-off already documented for dev." **That framing is wrong.** In dev, Helm reads the re-sealed working tree, so the re-seal works. In prod, Argo reads git, so it cannot. Different failure mode, different severity. It blocks a reviewer reproducing the GitOps demo and it blocks Part 5's clean-machine one-command bootstrap. Candidate fixes: have `seal-hmac.sh --env prod` refuse to mint a fresh key while the committed values file already carries a ciphertext, telling the operator to restore the key or re-seal **and commit**; or commit the public cert half so sealing does not require a live cluster.
 
 **F-3 — post-deploy verification does not gate the deployment, and today nothing responds when it fails.** The assignment asks for a check that "gates the deployment on it." As built the E2E is a PostSync hook: pods are already serving before it runs, and on failure Argo marks the sync Failed, retries ×3, then stops — no notification, no revert, and (per F-1) no rollback workflow. The detect-not-prevent trade is deliberate and argued above under "Where verification actually sits"; what is missing is that its only documented compensating control does not exist yet.
 
 ### SHOULD FIX
 
-**F-4 — `chart-lint` gates nothing.** It declares no `needs` and no job needs it; `promote` depends only on the three build jobs (`ci.yml:217`). A commit that breaks `helm lint --strict` or kubeconform still promotes and still reaches Argo. This document's failure-class table claims "Unrenderable chart or invalid manifest → reaches users? **No**" — **false as implemented.** One-line fix: add `chart-lint` to `promote.needs`.
+**F-4 — `chart-lint` gates nothing. Fixed.** Originally declared no `needs` and no job needed it, so a commit that broke `helm lint --strict` or kubeconform still promoted and still reached Argo — making this document's failure-class table's "Unrenderable chart or invalid manifest → reaches users? **No**" false as implemented. `promote.needs` now reads `[chart-lint, build-pokeproxy, build-mock-downstream, build-e2e]` (`ci.yml:144`), so `promote` cannot run unless `chart-lint` passed.
 
-**F-5 — the promoted desired state is never linted.** The promote commit carries `[skip ci]` (`ci.yml:265`), so the exact `deploy/envs/prod/values.yaml` that Argo consumes never passes through chart-lint; chart-lint only ever sees the pre-promote file. Low blast radius today (six scalar fields) but it compounds F-4: nothing validates the artifact Argo actually reads. Fix: render + kubeconform inside the promote job after the yq write, before committing.
+**F-5 — the promoted desired state is never linted. Fixed.** The promote commit still carries `[skip ci]` (`ci.yml:193`), so `deploy/envs/prod/values.yaml` never re-triggers `chart-lint` after the yq write — but the promote job no longer needs it to: it now runs its own "Validate the promoted values file before committing" step (`ci.yml:172-178`) — `helm lint --strict` plus `helm template | kubeconform` against the exact post-write file — before the `git add`/`commit`. The artifact Argo actually reads is validated in the same job that produces it.
 
 **F-6 — workflow-level `cancel-in-progress: true` also applies to `main`.** `ci.yml:9` groups on `ci-<workflow>-<ref>`, so two merges in quick succession cancel the older run — including a `promote` job in flight. The job-level `concurrency: {group: promote, cancel-in-progress: false}` (`ci.yml:220`) stops two promotes interleaving but cannot stop the run being cancelled outright. Usually benign, since the newer commit promotes anyway, but a cancellation between `git commit` and `git push` silently skips that sha's promotion. Fix: `cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}`.
 
@@ -475,7 +475,7 @@ One hypothetical commit traced end to end against `README_HOME_ASSIGNMENT.md` Pa
 
 **F-9 — the E2E Job declares no resource requests or limits**, unlike every other workload in the chart. Inconsistent with Part 2's stated posture and unbounded on a saturated node.
 
-**F-10 — signing is write-only.** All three images are cosign-signed and nothing verifies at pull time; the cluster pulls unverified digests, and Argo CD's `signatureKeys` covers git commit signatures, not images. `cosign verify` was run by hand once (WORKLOG). Either say plainly in `deploy/README.md` that signatures are provenance verified out-of-band, or add an admission policy — as drawn, the chain has no consumer.
+**F-10 — signing is write-only.** All three images are cosign-signed and nothing verifies at pull time; the cluster pulls unverified digests, and Argo CD's `signatureKeys` covers git commit signatures, not images. `cosign verify` was run by hand once — repeated independently in the second pass below. Either say plainly in `deploy/README.md` that signatures are provenance verified out-of-band, or add an admission policy — as drawn, the chain has no consumer.
 
 **F-11 — a red PR can still merge to `main`** (DoD #2). The pipeline itself stays safe, since `promote` needs the build jobs and those need lint and test, but broken code lands on `main` with no promotion — a confusing half-state to debug.
 
@@ -483,7 +483,7 @@ One hypothetical commit traced end to end against `README_HOME_ASSIGNMENT.md` Pa
 
 **F-12** — this document's "Final pipeline" diagram and step-5 text were stale in three ways (recursion mechanism, `needs:`, the ruleset bypass). Corrected in place above.
 
-**F-13** — `docs/issues/021+` for S4 and N7 do not exist; both are recorded as prose in `WORKLOG.md`'s backlog table instead of the per-issue format deliverable 2 asks for. Step 7.
+**F-13 — Fixed.** `docs/issues/021-values-prod-undeployable.md` (S4) and `docs/issues/022-seal-hmac-wholesale-rewrite.md` (N7) both now exist in the per-issue format deliverable 2 asks for. Step 7.
 
 **F-14** — nothing asserts that the digests promote writes are actually pullable. The build jobs' outputs make this near-certain; a `buildx imagetools inspect` in the promote job makes the desired state self-validating for about three seconds of runtime.
 
@@ -516,4 +516,4 @@ Same trace repeated a day later, against `origin/main` at `da55fc1` (the promote
 
 **One new finding, doc-only:**
 
-**N1 — `deploy/README.md`'s Rollback section (lines 180–182) is stale and contradicts this plan's own DoD table.** It reads "Not yet run against a real failure" and describes F-7 as "not yet executed live" for all three rollback scenarios. In fact, scenarios A, B and C were all executed live on 2026-08-23 with captured evidence (`WORKLOG.md`, "Step 6 scenarios A and B" / "Scenario C — executed live"), and this document's own DoD item 9 already reads **Done**. The PR that closed step 7 ([#7](https://github.com/IdanBro/PokeProxy/pull/7)) updated `WORKLOG.md`, issue write-ups and `AI_WORKFLOW.md` but missed this section of `deploy/README.md`. Severity: **NICE TO HAVE** — no functional impact, but deliverable 8 is a README a reviewer reads to understand the submission, and it currently understates what was actually proven. **Fixed** — `deploy/README.md`'s Rollback section now summarizes all three executed scenarios with results, in place of the stale "not yet executed" paragraph.
+**N1 — `deploy/README.md`'s Rollback section (lines 180–182) is stale and contradicts this plan's own DoD table.** It reads "Not yet run against a real failure" and describes F-7 as "not yet executed live" for all three rollback scenarios. In fact, scenarios A, B and C were all executed live on 2026-08-23 with captured evidence (now in `deploy/README.md`'s Rollback section), and this document's own DoD item 9 already reads **Done**. The PR that closed step 7 ([#7](https://github.com/IdanBro/PokeProxy/pull/7)) updated `WORKLOG.md`, issue write-ups and `AI_WORKFLOW.md` but missed this section of `deploy/README.md`. Severity: **NICE TO HAVE** — no functional impact, but deliverable 8 is a README a reviewer reads to understand the submission, and it currently understates what was actually proven. **Fixed** — `deploy/README.md`'s Rollback section now summarizes all three executed scenarios with results, in place of the stale "not yet executed" paragraph.

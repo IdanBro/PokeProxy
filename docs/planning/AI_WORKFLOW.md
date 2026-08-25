@@ -44,6 +44,8 @@ For meaningful changes I used the same loop:
 
 The prompts below are intentionally concise. Repository state and decisions live in the repository instead of being repeated in every conversation.
 
+Full history originally kept two parallel logs of the same sessions here — this verbatim prompt log and the denser `## Session Notes` below. Cut to a short representative sample during the final cleanup pass: `Session Notes` is the single source of truth for what happened and why; these two prompts just show the steering style — structured, gated on explicit approval, one issue at a time.
+
 ### Session 01 — Repository Review
 
 ```text
@@ -63,300 +65,6 @@ I want you to:
 7. Pick the single first issue you recommend addressing and explain it using the pre-change workflow from CLAUDE.md.
 
 Do not write code. Stop after the first issue explanation and wait for me.
-```
-
-### Session 01 — Persist the agreed review
-
-```text
-I agree with the review direction.
-
-Do not modify application code.
-
-Update WORKLOG.md with the initial assessment, prioritized Part 1 backlog, current state, and any items that belong under Backlog / Later.
-
-Create docs/planning/part-01-production-hardening.md containing only the planning we actually discussed: approach, priorities, important alternatives, and why we chose the order of work.
-
-Keep both documents concise and written as engineering notes from my perspective.
-
-Then show me the documentation diff and stop.
-```
-
-### Session 02 — Part 1: Production Hardening
-
-```text
-We are starting the implementation phase of Part 1 — Code Review & Production Hardening.
-
-Read CLAUDE.md, README_HOME_ASSIGNMENT.md, WORKLOG.md, docs/planning/part-01-production-hardening.md, and inspect the current git status/diff.
-
-Do not modify anything yet.
-
-Reconcile the current repository state with the Part 1 backlog. If something changed since the review, call it out.
-
-Then select the highest-priority unresolved issue and explain ONLY that issue using the pre-change workflow from CLAUDE.md.
-
-Do not implement it yet. Stop for my approval.
-```
-
-### Reusable — Approve one implementation
-
-```text
-Approved.
-
-Implement only the issue we just agreed on.
-
-Please write a clean code, no comments, understandable, using SOLID principles. the code should explain itself instead of having comments doing it.
-
-Add or update regression tests where appropriate, run the relevant checks, inspect the final git diff, update WORKLOG.md, and create/update the corresponding docs/issues/ write-up.
-
-Remove any code/tests that are not correlating with the current and new implementation, in order to maintain a small and relevant codebase.
-
-Do not start another issue.
-
-At the end, summarize:
-- what changed
-- what verification actually ran
-- any remaining risk or follow-up
-
-Then stop.
-```
-
-### Reusable — Skeptical diff review
-
-```text
-Before we move on, act as a skeptical Senior/Staff DevOps reviewer.
-
-Review ONLY the diff we just created and the behavior it changes.
-
-Look for:
-- correctness problems
-- realistic production failure modes
-- hidden behavior changes
-- unnecessary complexity
-- missing tests
-- security/operability regressions
-- assumptions that are not documented
-
-Do not modify anything.
-
-Rank findings as BLOCKER / SHOULD FIX / NICE TO HAVE. If there is nothing meaningful, say so explicitly.
-```
-
-### Reusable — Commit changes
-
-```text
-Look at the current git status.
-
-Commit all changes.
-
-Commit message is max 2 sentences. 
-
-Authour is only me. 
-
-Push to current branch.
-```
-
-### Reusable — Next issue
-
-```text
-Continue Part 1.
-
-Read the current WORKLOG.md and git state, then pick the next highest-priority unresolved Part 1 issue.
-
-Explain simply and understandable from high level only that issue using our pre-change workflow.
-
-Do not modify anything until I approve.
-```
-
-### Part 1 completion gate
-
-```text
-Before we declare Part 1 complete, reread the Part 1 requirements in README_HOME_ASSIGNMENT.md and perform a requirement-by-requirement audit against the current repository.
-
-Do not start Part 2.
-
-Check specifically that reliability issues, configuration/secrets hygiene, structured logging, graceful shutdown, useful errors, operability improvements, tests, and per-issue documentation are actually covered.
-
-Run the relevant Part 1 verification that is safe to run locally.
-
-Then give me:
-1. requirements satisfied
-2. remaining gaps
-3. BLOCKER / SHOULD FIX / NICE TO HAVE findings
-4. anything deliberately deferred and why
-
-Update WORKLOG.md and docs/planning/part-01-production-hardening.md only with factual final state, then stop.
-```
-
-### Session 03 — Part 2: Infrastructure & Deployment
-
-```text
-We are starting Part 2 — Infrastructure & Deployment in a fresh session.
-
-Read CLAUDE.md, README_HOME_ASSIGNMENT.md, WORKLOG.md, the Part 1 planning/issues that matter, and inspect git status/diff.
-
-Do not implement anything yet.
-
-Design the Part 2 approach and explicitly evaluate:
-- production Docker image design
-- local Kubernetes choice (k3d / kind / minikube or another justified option)
-- raw manifests vs Kustomize vs Helm
-- application, Redis, and mock-service topology/networking
-- ConfigMaps and Secrets
-- health probes and graceful termination
-- resource requests/limits and container security
-- local image workflow and future CI registry workflow
-- what must remain compatible with later GitOps, monitoring, E2E, and one-command bootstrap
-
-Prefer the simplest production-reasonable design I can clearly defend in an interview.
-
-Give me the options, recommendation, tradeoffs, proposed repository layout, and ordered implementation steps.
-
-Do not create files yet. Pick only the first implementation step and stop for my approval.
-```
-
-### Part 2 completion gate
-
-```text
-Audit Part 2 against README_HOME_ASSIGNMENT.md before we move on.
-
-Verify the real deployed behavior, not just manifest syntax: containers build, the cluster resources become healthy, services can reach each other using cluster networking, configuration/secrets are correct, and probes/resources/security settings behave as intended.
-
-Do not start CI/CD.
-
-Report remaining gaps by BLOCKER / SHOULD FIX / NICE TO HAVE, update WORKLOG.md and the Part 2 planning document with factual state, then stop.
-```
-
-### Session 04 — Part 3: CI/CD & GitOps
-
-```text
-We are starting Part 3 — CI/CD & GitOps in a fresh session.
-
-Read CLAUDE.md, README_HOME_ASSIGNMENT.md, WORKLOG.md, the current deployment configuration, and inspect git status/diff.
-
-Do not implement anything yet.
-
-Design the delivery flow from commit to verified deployment.
-
-Evaluate and explain:
-- CI stages for lint/test/build
-- image registry and immutable image versioning
-- caching/reproducibility
-- direct scripted deployment vs GitOps
-- if GitOps: who builds, who updates desired state, who reconciles it, and how image versions are represented
-- post-deploy E2E that sends real protobuf + HMAC traffic through PokeProxy and validates the mock downstream result
-- how verification gates deployment
-- rollback for rollout failure, verification failure, and a bad version discovered later
-- what can realistically run locally vs what is defined/demonstrated
-
-Do not call a process GitOps if CI is directly mutating the cluster behind Git's back.
-
-Recommend the simplest coherent architecture and repository layout, including tradeoffs.
-
-Then pick only the first implementation step and stop for my approval.
-```
-
-### Part 3 completion gate
-
-```text
-Audit Part 3 requirement-by-requirement against README_HOME_ASSIGNMENT.md.
-
-Trace one hypothetical commit all the way through CI, image publication/versioning, desired-state change or deployment, rollout, post-deploy E2E, failure handling, and rollback.
-
-Identify any stage that is hand-wavy, non-runnable, or inconsistent with the documented architecture.
-
-Do not start observability.
-
-Report BLOCKER / SHOULD FIX / NICE TO HAVE findings, update WORKLOG.md and the Part 3 planning document with factual state, then stop.
-```
-
-### Session 05 — Part 4: Observability
-
-```text
-We are starting Part 4 — Observability in a fresh session.
-
-Read CLAUDE.md, README_HOME_ASSIGNMENT.md, WORKLOG.md, the hardened application, and current Kubernetes deployment.
-
-Do not implement anything yet.
-
-Design an observability approach that answers the assignment's question: "Is this service healthy right now?"
-
-Evaluate:
-- application RED-style metrics where appropriate
-- downstream/cache/routing signals that are operationally useful
-- metric naming and label cardinality
-- process/runtime/Kubernetes resource metrics vs custom application metrics
-- Prometheus-compatible instrumentation
-- monitoring stack deployment
-- one focused Grafana dashboard
-- at least one meaningful alert with justified threshold/duration
-- one signal we intentionally choose NOT to alert on and why
-
-Avoid vanity metrics and high-cardinality labels.
-
-Give me the proposed metrics, dashboard panels, alerts, tradeoffs, and ordered implementation steps.
-
-Do not change files yet. Pick only the first step and stop for my approval.
-```
-
-### Part 4 completion gate
-
-```text
-Audit Part 4 against README_HOME_ASSIGNMENT.md.
-
-Verify that metrics are actually scraped, dashboard queries resolve to real data, and alert expressions are valid and capable of firing under the documented condition.
-
-Check whether the dashboard can answer "Is PokeProxy healthy right now?" without requiring someone to inspect twenty unrelated charts.
-
-Do not start Part 5.
-
-Report BLOCKER / SHOULD FIX / NICE TO HAVE findings, update WORKLOG.md and the Part 4 planning document, then stop.
-```
-
-### Session 06 — Part 5: Zero to Running + E2E
-
-```text
-We are starting Part 5 — Automation: Zero to Running in One Command in a fresh session.
-
-Read CLAUDE.md, README_HOME_ASSIGNMENT.md, WORKLOG.md, and the current Docker/Kubernetes/monitoring/E2E tooling.
-
-Do not implement anything yet.
-
-Design the smallest clear automation that takes a clean supported machine to the full running stack with one entry point and also provides teardown.
-
-Evaluate:
-- prerequisite validation
-- cluster creation/reuse
-- image build/import or pull flow
-- application/Redis/mock deployment
-- monitoring installation
-- waiting for actual readiness
-- post-deploy functional verification
-- idempotency when run twice
-- failure messages and cleanup behavior
-- teardown
-- whether Makefile, shell scripts, or a small CLI is the clearest orchestration layer
-
-Avoid hiding large fragile shell programs inside Makefile recipes.
-
-Give me the proposed command UX, sequence, failure model, repository layout, and tradeoffs.
-
-Do not implement yet. Pick only the first step and stop for my approval.
-```
-
-### Part 5 completion gate
-
-```text
-Perform a clean-machine-style audit of Part 5.
-
-Starting only from the documented prerequisites, trace the exact one-command bootstrap path and teardown path.
-
-Verify idempotency by reasoning about and, where feasible, actually rerunning the entry point.
-
-Check that success means the full monitored application is running and functional, not merely that Kubernetes objects were applied.
-
-Report BLOCKER / SHOULD FIX / NICE TO HAVE findings and update WORKLOG.md and the Part 5 planning document with the final factual state.
-
-Do not begin bonus work.
 ```
 
 ### Session 07 — Final Adversarial Review
@@ -399,46 +107,6 @@ Then give me the 10 technical interview questions you would be most likely to as
 Stop. Do not fix anything until I choose a finding.
 ```
 
-### Final submission gate
-
-```text
-Do one final requirement-by-requirement submission audit against README_HOME_ASSIGNMENT.md.
-
-Do not make changes.
-
-For every deliverable, show:
-- where it is implemented/documented
-- how it was verified
-- any limitation I should disclose
-
-Then give me:
-1. a final BLOCKER list
-2. a final SHOULD FIX list
-3. commands I should run once myself before submitting
-4. files I should make sure are included in the ZIP/repository
-5. anything that should NOT be included (temporary files, local secrets, generated junk)
-
-If there are no blockers, say that explicitly.
-```
-
-### Continuation after a context reset
-
-```text
-This is a continuation session for the current workstream.
-
-Reconstruct context from the repository instead of guessing.
-
-Read CLAUDE.md, README_HOME_ASSIGNMENT.md, WORKLOG.md, the relevant docs/planning/ file, relevant docs/issues/ files, and inspect git status/diff.
-
-Tell me:
-1. what is already complete
-2. what is currently in progress
-3. any uncommitted changes
-4. the next single decision/change according to the current plan
-
-Do not modify anything yet. Stop after reconstructing the state.
-```
-
 ---
 
 ## Session Notes
@@ -461,7 +129,7 @@ Factual conversation-flow notes, appended per workstream. What the session focus
 
 **Also settled:** WSL bash as the single control shell (Part 5's bootstrap must run on a Linux CI runner); k3d over kind/minikube/Docker Desktop (Docker Desktop's cluster lifecycle is a GUI toggle and fails Part 5 outright); a `__main__.py` config preflight in step 2 to close R4 and M6; single Helm chart with `mockDownstream.enabled: false` in prod values.
 
-**Result:** approved plan at `docs/planning/part-02-infrastructure-deployment.md`, 10 ordered steps. Step 1 (Docker image) implemented and verified by execution — measurements in `WORKLOG.md`, not asserted.
+**Result:** approved plan at `docs/planning/part-02-infrastructure-deployment.md`, 10 ordered steps. Step 1 (Docker image) implemented and verified by execution — measurements in `docs/planning/part-02-infrastructure-deployment.md`'s Step 1 result, not asserted.
 
 ### Session 04 — Part 2 completion audit (2026-08-23)
 
@@ -477,7 +145,7 @@ Factual conversation-flow notes, appended per workstream. What the session focus
 
 **One documentation correction:** `WORKLOG.md` recorded 101 tests; the suite is at 106 (the step-2 entrypoint tests were never folded into the count).
 
-**Result:** 2 BLOCKERs (B1, B2), 4 SHOULD FIX (S1–S4), 6 NICE TO HAVE (N1–N6). Both blockers are about reproducing the deployment outside this machine, neither affects the running cluster, and both are prerequisites for Part 3's CD and Part 5's bootstrap. Full evidence in `docs/planning/part-02-infrastructure-deployment.md`; tracked in `WORKLOG.md`'s backlog. No code or chart changed by the audit itself.
+**Result:** 2 BLOCKERs (B1, B2), 4 SHOULD FIX (S1–S4), 6 NICE TO HAVE (N1–N6). Both blockers are about reproducing the deployment outside this machine, neither affects the running cluster, and both are prerequisites for Part 3's CD and Part 5's bootstrap. Full evidence in `docs/planning/part-02-infrastructure-deployment.md`. No code or chart changed by the audit itself.
 
 ### Session 05 — B1/B2 blocker fixes (2026-08-23, same day as the Part 2 audit)
 
@@ -705,3 +373,7 @@ Factual conversation-flow notes, appended per workstream. What the session focus
 **Fresh-context review, per the user's explicit request.** Spawned a `general-purpose` subagent with no memory of this conversation, given a fully self-contained prompt: what changed and why, which files (naming that several were untracked so plain `git diff` wouldn't show their content), what to check (correctness in the two new/changed shell scripts and the Tiltfile, whether each fix actually closes its handoff finding, whether the hardcoded dev Grafana password is a real leak given it's shared with the prod stand-in path, reuse/simplification against this repo's own `CLAUDE.md` conventions), and an explicit instruction not to touch git state or attempt a live cluster. **No correctness bugs found** — it specifically traced `check_host_port_free()`'s three call sites and confirmed the `v`-strip only touches `$have`, never `$want`. **Three doc-accuracy findings, all fixed**: the root `README.md`'s "what `tilt ci` does" line hadn't been updated for the new monitoring-assertion step; `monitoring-health.sh`'s first version hardcoded the Grafana admin password as a second literal copy of `deploy/monitoring/values.yaml`'s `adminPassword` rather than reading the chart's own Secret (a real single-source-of-truth bug — a future password rotation in one place would have silently broken the other, and `curl -f` would have masked the resulting 401 as an opaque failure); and the `jq` prerequisite row's justification hadn't been updated to reflect that A-4 made it a hard `make up` dependency, not just a `make dev` button's. Fixed all three, re-verified the password-lookup change live against the running cluster.
 
 **Result:** A-2 through A-5 fixed and live-verified, both individually and together through a real `tilt ci` (exit 0, `SUCCESS. All workloads are healthy.`); A-7/A-8/A-9/A-12 folded in; A-10/A-11/A-13 moved to `WORKLOG.md`'s Backlog with reasons for deferring each. `docs/planning/part-05-automation.md` gained a "Fixes — 2026-08-25" section (per-finding evidence table plus the review pass); `WORKLOG.md`'s Part 5 Current State and Final Review sections updated to match. A-1 (commit/push) was the user's own instruction for this session, not left open — landing immediately after this entry.
+
+### Session 19 — Final cleanup pass (2026-08-25)
+
+`scripts/monitoring-health.sh` and `scripts/run-e2e-now.sh`, both described above as live and working, are deleted in this pass — as is the `jq` prerequisite (`preflight.sh`'s `require_tool jq`, the README row) that session 18 added on their account. Nothing above is wrong as history; it just isn't the current state. `monitoring-health.sh`'s Tilt gate was already reversed the same day it was added (session 18, at direct user request), leaving the script itself an orphaned manual-check file with no caller; `run-e2e-now.sh` was an ad-hoc convenience the Helm post-install/PostSync E2E hook (Part 3) already covers on every `make up` and every prod sync. Deleting both removed the last two `jq` callers in the repo, so the prerequisite went with them. Full detail in `docs/planning/part-05-automation.md`'s end-of-file addendum.
