@@ -7,17 +7,17 @@ e2e:
   enabled: true
   image:
     repository: ghcr.io/idanbro/pokeproxy-e2e
-    tag: "ff76143"
-    digest: sha256:6b0530bda0e5f8fbaf700dc417e75c337c103d55487afcd70214e0a825f3dd87
+    tag: "ac74283"
+    digest: sha256:ce3ea756596cceb3b03b62f6a7f26429c40698abc29e42bd3c0e0ec578207f57
 components:
   pokeproxy:
     image:
       repository: ghcr.io/idanbro/pokeproxy
-      tag: "ff76143"
-      digest: sha256:394d8f7eb54791f4e78ac4912fd981d8b71a03d91b6f160364d691b68633f58f
+      tag: "ac74283"
+      digest: sha256:d878923dbbe3d2ba40fb725b4effd1184d0563607d1fe3affdef59a5ed08a137
   mock-downstream:
     enabled: true
     image:
       repository: ghcr.io/idanbro/mock-downstream
-      tag: "ff76143"
-      digest: sha256:88c67cceacaa448674ebe97e86cdcf907e6ccf05999c9403073c0f2087c9e366
+      tag: "ac74283"
+      digest: sha256:1ebdb7b70ff58ac905bf0ad55df4a3e6286a2538917289973002de61238aecee
