@@ -112,6 +112,6 @@ docs/
 - **Part 2** — `deploy/helm/pokeproxy` is the chart: the app, Redis, mock-downstream, resource limits, health probes, secrets via Sealed Secrets. `docs/planning/part-02-infrastructure-deployment.md`.
 - **Part 3** — CI in `.github/workflows/ci.yml`, CD via Argo CD for the prod stand-in, the post-deploy E2E gate (`app/e2e/e2e_check.py`, `--atomic`), rollback via `rollback.yml`. Operational detail and rollback evidence: `deploy/README.md`. Design and rejected alternatives: `docs/planning/part-03-cicd-gitops.md`.
 - **Part 4** — metrics in the app, `kube-prometheus-stack`, one dashboard, three alert rules. Access details: `deploy/README.md`. Design rationale and threshold justifications: `docs/planning/part-04-observability.md`.
-- **Part 5** (this file) — `docs/planning/part-05-automation.md` has the full design: the build order, every decision and rejected alternative, and the gate each step was verified against.
+- **Part 5** — `docs/planning/part-05-automation.md` has the full design: the build order, every decision and rejected alternative, and the gate each step was verified against.
 
 `docs/planning/AI_WORKFLOW.md` records the actual conversation flow with the AI tooling used to build this — corrections made, decisions taken, and why — per deliverable 9.
