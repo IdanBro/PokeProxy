@@ -85,7 +85,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     app.state.rules = _load_rules(settings.pokeproxy_config)
     app.state.hmac_key = settings.hmac_key
     app.state.metrics = Metrics.create(
-        revision=settings.pokeproxy_revision, version=settings.build_version
+        revision=settings.pokeproxy_revision,
+        version=settings.build_version,
+        rule_names=[rule.reason for rule in app.state.rules],
     )
 
     http_client = _build_http_client(settings)

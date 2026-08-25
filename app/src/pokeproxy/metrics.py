@@ -14,6 +14,7 @@ structurally impossible, unlike the `StatsRegistry` it replaces.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from prometheus_client import (
@@ -21,9 +22,15 @@ from prometheus_client import (
     CollectorRegistry,
     Counter,
     Gauge,
+    GCCollector,
     Histogram,
+    PlatformCollector,
+    ProcessCollector,
+    disable_created_metrics,
     generate_latest,
 )
+
+_DOWNSTREAM_RESULTS = ("success", "timeout", "error")
 
 # Straddles the sub-millisecond reject path (bad signature, oversized body)
 # and forward_deadline_seconds (10s) so both ends of the request lifecycle
@@ -42,8 +49,18 @@ class Metrics:
     cache_operations_total: Counter
 
     @classmethod
-    def create(cls, *, revision: str, version: str) -> Metrics:
+    def create(
+        cls, *, revision: str, version: str, rule_names: Iterable[str] = ()
+    ) -> Metrics:
+        # See A-12 in docs/planning/part-04-observability.md.
+        disable_created_metrics()
+
         registry = CollectorRegistry()
+
+        # See A-1 in docs/planning/part-04-observability.md.
+        ProcessCollector(registry=registry)
+        PlatformCollector(registry=registry)
+        GCCollector(registry=registry)
 
         Gauge(
             "pokeproxy_build_info",
@@ -51,6 +68,24 @@ class Metrics:
             ["revision", "version"],
             registry=registry,
         ).labels(revision=revision, version=version).set(1)
+
+        downstream_requests_total = Counter(
+            "pokeproxy_downstream_requests_total",
+            "Forward attempts to a downstream rule endpoint, by rule and result.",
+            ["rule", "result"],
+            registry=registry,
+        )
+        downstream_retries_total = Counter(
+            "pokeproxy_downstream_retries_total",
+            "Retry attempts against a downstream rule endpoint.",
+            ["rule"],
+            registry=registry,
+        )
+        # See A-5 in docs/planning/part-04-observability.md.
+        for name in rule_names:
+            downstream_retries_total.labels(rule=name)
+            for result in _DOWNSTREAM_RESULTS:
+                downstream_requests_total.labels(rule=name, result=result)
 
         return cls(
             registry=registry,
@@ -66,12 +101,7 @@ class Metrics:
                 buckets=_DURATION_BUCKETS,
                 registry=registry,
             ),
-            downstream_requests_total=Counter(
-                "pokeproxy_downstream_requests_total",
-                "Forward attempts to a downstream rule endpoint, by rule and result.",
-                ["rule", "result"],
-                registry=registry,
-            ),
+            downstream_requests_total=downstream_requests_total,
             downstream_duration_seconds=Histogram(
                 "pokeproxy_downstream_duration_seconds",
                 "Downstream forward duration by rule.",
@@ -79,12 +109,7 @@ class Metrics:
                 buckets=_DURATION_BUCKETS,
                 registry=registry,
             ),
-            downstream_retries_total=Counter(
-                "pokeproxy_downstream_retries_total",
-                "Retry attempts against a downstream rule endpoint.",
-                ["rule"],
-                registry=registry,
-            ),
+            downstream_retries_total=downstream_retries_total,
             cache_operations_total=Counter(
                 "pokeproxy_cache_operations_total",
                 "Redis cache operations by operation and result.",

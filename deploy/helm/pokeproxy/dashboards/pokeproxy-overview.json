@@ -31,7 +31,7 @@
       "type": "stat",
       "title": "Server error rate",
       "description": "sum(rate(pokeproxy_requests_total{status=~\"5..\"}[5m])) / sum(rate(pokeproxy_requests_total[5m])) -- matches the PokeProxyHighServerErrorRate alert expression (5% threshold). Only the NUMERATOR is wrapped in 'or vector(0)', deliberately: if pokeproxy_requests_total goes fully absent (target down), the denominator is empty too, so the whole expression stays 'No data' instead of falsely rendering a healthy 0%. That gap is what PokeProxyTargetsDown alerts on. Do not wrap the denominator too -- that would silently mask a real outage as 0%.",
-      "gridPos": { "h": 4, "w": 5, "x": 0, "y": 1 },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {
@@ -69,7 +69,7 @@
       "type": "stat",
       "title": "Request rate",
       "description": "sum(rate(pokeproxy_requests_total[5m]))",
-      "gridPos": { "h": 4, "w": 5, "x": 5, "y": 1 },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {
@@ -100,7 +100,7 @@
       "type": "stat",
       "title": "p99 latency",
       "description": "histogram_quantile(0.99, sum(rate(pokeproxy_request_duration_seconds_bucket[5m])) by (le)) -- total latency as the caller experiences it. Unlabeled histogram (D5): 401s dilute this alongside slow forwards, documented tradeoff.",
-      "gridPos": { "h": 4, "w": 5, "x": 10, "y": 1 },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {
@@ -137,8 +137,8 @@
       "id": 5,
       "type": "stat",
       "title": "Pods ready / desired",
-      "description": "kube_deployment_status_replicas_ready / kube_deployment_spec_replicas for the pokeproxy Deployment -- the one panel app-level metrics structurally can't provide; kube-state-metrics only.",
-      "gridPos": { "h": 4, "w": 5, "x": 15, "y": 1 },
+      "description": "kube_deployment_status_replicas_ready / kube_deployment_spec_replicas for the pokeproxy Deployment -- the one panel app-level metrics structurally can't provide; kube-state-metrics only. Query C plots the ready/desired ratio with a red-below-1/green-at-1 threshold, same pattern as panel 16 (Targets up), so a degraded fleet (e.g. 1-of-2 ready) visibly differs from a healthy one -- A/B alone shared one static blue threshold and could never look wrong (A-6 fix).",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {
@@ -150,6 +150,11 @@
           "expr": "kube_deployment_spec_replicas{namespace=\"pokeproxy\",deployment=\"pokeproxy\"}",
           "legendFormat": "desired",
           "refId": "B"
+        },
+        {
+          "expr": "kube_deployment_status_replicas_ready{namespace=\"pokeproxy\",deployment=\"pokeproxy\"} / kube_deployment_spec_replicas{namespace=\"pokeproxy\",deployment=\"pokeproxy\"}",
+          "legendFormat": "ready/desired",
+          "refId": "C"
         }
       ],
       "fieldConfig": {
@@ -158,7 +163,25 @@
           "decimals": 0,
           "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "ready/desired" },
+            "properties": [
+              { "id": "unit", "value": "percentunit" },
+              { "id": "decimals", "value": 2 },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "red", "value": null },
+                    { "color": "green", "value": 1 }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
@@ -166,6 +189,43 @@
         "textMode": "value_and_name",
         "colorMode": "value",
         "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 17,
+      "type": "stat",
+      "title": "PokeProxy alerts firing",
+      "description": "count(ALERTS{alertname=~\"PokeProxy.*\",alertstate=\"firing\"}) -- the dashboard and the alerts were separate universes before this (A-9): nothing showed whether a PokeProxyHighServerErrorRate/CacheBackendErrors/TargetsDown alert was actually active. Both count() and the 'or vector(0)' are safe here: no matching series genuinely means zero alerts firing, not an outage.",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "count(ALERTS{alertname=~\"PokeProxy.*\",alertstate=\"firing\"}) or vector(0)",
+          "legendFormat": "firing",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
         "justifyMode": "auto"
       }
     },
@@ -298,8 +358,34 @@
       }
     },
     {
+      "id": 18,
+      "type": "timeseries",
+      "title": "Server error rate by pod",
+      "description": "sum(rate(pokeproxy_requests_total{status=~\"5..\"}[5m])) by (pod) -- every other panel except the restart table sum()s across the whole fleet, so one bad-but-not-dead replica (of 2) is invisible: it just halves the fleet-wide numbers and 'Targets up' only catches a pod that's fully dead, not merely erroring (A-10). pod comes from the ServiceMonitor's default target-discovery relabeling, confirmed present live on pokeproxy_requests_total.",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "sum(rate(pokeproxy_requests_total{status=~\"5..\"}[5m])) by (pod)",
+          "legendFormat": "{{pod}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 },
       "id": 9,
       "panels": [],
       "title": "Row 3 — Dependencies",
@@ -310,7 +396,7 @@
       "type": "timeseries",
       "title": "Downstream rate / error-rate / retry-rate by rule",
       "description": "sum(rate(pokeproxy_downstream_requests_total[5m])) by (rule); error subset (result=~\"error|timeout\"); sum(rate(pokeproxy_downstream_retries_total[5m])) by (rule) -- retries are a leading indicator, climbing before the 10s forward_deadline is exhausted.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {
@@ -346,7 +432,7 @@
       "type": "timeseries",
       "title": "Cache hit rate + Redis error rate",
       "description": "The silent-failure panel: cache.py returns None on RedisError, indistinguishable from a miss at the response layer. pokeproxy_cache_operations_total{result=\"error\"} is the only place a dead Redis becomes visible. Cache hit rate: only the NUMERATOR is wrapped in 'or vector(0)', same reasoning as the Server error rate panel -- if the app itself is down, pokeproxy_cache_operations_total is fully absent and the denominator stays empty too, so this renders 'No data' rather than a false healthy 0%; that case belongs to PokeProxyTargetsDown / the Targets up panel, not this one. Redis error rate is a plain rate (not a ratio), so it's fully wrapped -- 0 errors/s is an unambiguous, correct reading whenever the app is actually up.",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {
@@ -382,7 +468,7 @@
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
       "id": 12,
       "panels": [],
       "title": "Row 4 — Resources & version",
@@ -393,7 +479,7 @@
       "type": "timeseries",
       "title": "CPU vs limit + throttled-period ratio",
       "description": "cAdvisor via the kubelet job (container_cpu_usage_seconds_total / container_cpu_cfs_throttled_periods_total), limit via kube-state-metrics' kube_pod_container_resource_limits. Filtered by namespace/container, not job -- there is no job=\"cadvisor\".",
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 24 },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 32 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {
@@ -437,7 +523,7 @@
       "type": "timeseries",
       "title": "Memory working set vs limit",
       "description": "container_memory_working_set_bytes -- the number the kernel OOM-kills against, not process_resident_memory_bytes.",
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 24 },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 32 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {
@@ -468,7 +554,7 @@
       "type": "table",
       "title": "Restart count + build revision",
       "description": "kube_pod_container_status_restarts_total by pod, and pokeproxy_build_info (revision/version) -- correlates a regression with the deploy that caused it.",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 24 },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 32 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {
