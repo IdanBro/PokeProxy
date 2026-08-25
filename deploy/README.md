@@ -84,11 +84,15 @@ Tilt's own web UI (`http://localhost:10350`, local only) is a separate case — 
 There is no real production cluster for this assignment, so `prod` is a second k3d cluster on the same laptop: its own context, its own Argo CD, its own sealing key, its own port. That converts the CD half of Part 3 from described to demonstrated. Prod deliberately stays script-driven rather than moving to Tilt — Tilt is the dev inner loop, Argo CD is the delivery mechanism, and conflating them would blur exactly the distinction Part 3 exists to demonstrate.
 
 ```bash
-export POKEPROXY_HMAC_KEY="$(openssl rand -base64 32)"   # any value — see below
 make up-prod    # or: bash scripts/bootstrap-prod.sh
 ```
 
-`seal-hmac.sh --env prod` hard-fails immediately if `POKEPROXY_HMAC_KEY` isn't exported — even on a rerun where the value ends up unused because the key is already sealed. It no longer falls back to sealing the well-known local dev key for prod, so the export above is required every run, not just the first.
+`seal-hmac.sh --env prod` no longer requires `POKEPROXY_HMAC_KEY` to be exported. If it's unset — and prod's `values.yaml` actually needs (re-)sealing rather than already holding a sealed value — the script generates one itself and prints it once to stderr. **Demo convenience only, not a real safeguard**: nothing verifies who could have read that output, and the value is never stored anywhere else, so anything that needs to sign real traffic against this deployment has to be configured with whatever was printed. To seal a specific value instead (the only way to get a signing key you can actually reuse), export it yourself first:
+
+```bash
+export POKEPROXY_HMAC_KEY="$(openssl rand -base64 32)"   # any value — takes priority over auto-generation
+make up-prod
+```
 
 Idempotent otherwise, and the order matters:
 
