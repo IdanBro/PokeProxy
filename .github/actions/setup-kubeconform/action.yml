@@ -1,0 +1,12 @@
+name: Setup kubeconform
+description: Install kubeconform v0.8.0 with checksum verification.
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        curl -sSL -o kubeconform.tar.gz https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz
+        echo "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883  kubeconform.tar.gz" | sha256sum -c
+        tar -xzf kubeconform.tar.gz kubeconform
+        sudo mv kubeconform /usr/local/bin/kubeconform
