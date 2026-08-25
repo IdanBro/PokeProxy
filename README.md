@@ -8,7 +8,7 @@ A Pokemon-stream reverse proxy — HMAC-validated protobuf in, rule-matched JSON
 make up
 ```
 
-One command, non-interactive, exits with a real status code: `preflight` (tools + versions + Docker + host port) → create the `pokeproxy` k3d cluster if it doesn't already exist → `tilt ci` (builds all three images, installs sealed-secrets, installs `kube-prometheus-stack`, deploys the Helm chart with `--atomic`, runs the real post-install E2E check, asserts Prometheus is actually scraping the app and the alert rules loaded clean, probes the ingress from the host). Re-run it any time — it reuses what's already there and only touches what changed.
+One command, non-interactive, exits with a real status code: `preflight` (tools + versions + Docker + host port) → create the `pokeproxy` k3d cluster if it doesn't already exist → mint-and-seal the HMAC key (`seal-hmac.sh`, safe to re-run) → `tilt ci` (builds all three images, installs `kube-prometheus-stack`, deploys the Helm chart with `--atomic`, runs the real post-install E2E check, probes the ingress from the host). Re-run it any time — it reuses what's already there and only touches what changed.
 
 Verified this session, from nothing: fresh cluster + local registry created, all four app pods `Running`, `kube-prometheus-stack`/`sealed-secrets`/`pokeproxy` Helm releases all `deployed`, images resolved through the registry, unsigned `POST /stream` → `401`, `SUCCESS. All workloads are healthy.`, exit `0`. Re-run immediately after: cluster reused (not recreated), pod ages unchanged (no needless restart), Helm went to the next revision cleanly, exit `0` again.
 
@@ -40,7 +40,7 @@ make down
 | `kubeseal` | 0.24+ | seals the HMAC secret |
 | `git` | 2.20+ | sha-tagged builds |
 | `tilt` | 0.30+ | local only — not needed for `make up-prod` |
-| `jq` | any | local only — the `monitoring-health` gate in `make up` and the "Run E2E now" dev button both parse JSON with it |
+| `jq` | any | local only — the "Run E2E now" dev button parses JSON with it |
 
 Plus Docker actually running, and host port 8080 (8081 for prod) free — both checked live, not assumed. Verified this session: a bogus `PATH` fails naming the exact missing tool and an install link; a genuinely occupied port 8080 fails naming the port and how to find what's holding it; a clean environment passes in under a second.
 
@@ -48,8 +48,8 @@ Plus Docker actually running, and host port 8080 (8081 for prod) free — both c
 
 | Command | Does | When to use |
 |---|---|---|
-| `make up` | preflight → cluster (create if absent) → `tilt ci` | the one-command bootstrap; CI-shaped, exits when done |
-| `make dev` | preflight → cluster (create if absent) → `tilt up` | interactive: web UI, live logs per resource, the debug buttons below |
+| `make up` | preflight → cluster (create if absent) → seal HMAC key → `tilt ci` | the one-command bootstrap; CI-shaped, exits when done |
+| `make dev` | preflight → cluster (create if absent) → seal HMAC key → `tilt up` | interactive: web UI, live logs per resource, the debug buttons below |
 | `make down` | `tilt down` → `k3d cluster delete` | tear down the local cluster completely |
 | `make up-prod` | `bash scripts/bootstrap-prod.sh` | bring up the prod stand-in (its own k3d cluster + Argo CD) — see `deploy/README.md` |
 | `make down-prod` | delete the prod stand-in cluster | tear down prod; leaves the prod sealing key on disk |
@@ -93,15 +93,18 @@ deploy/
 
 scripts/
   preflight.sh             tool/version/Docker/port checks
-  up.sh, down.sh           what `make up`/`make down` actually run
+  up.sh, down.sh           what `make up`/`make down` actually run -- up.sh also mints/seals
+                           the HMAC key (seal-hmac.sh) before handing off to Tilt
   seal-hmac.sh             mint-or-reuse the sealing key, seal the HMAC secret
   init-sealing-key.sh      one-time, manual prod key provisioning
   install-monitoring.sh    kube-prometheus-stack install, shared by local and prod
+  monitoring-health.sh     on-demand check that Prometheus is scraping the app and the
+                           alert rules loaded clean -- not wired into `make up`, run by hand
   bootstrap-prod.sh, down-prod.sh   the prod stand-in
   break-rules.sh, restore-rules.sh, run-e2e-now.sh, status.sh   what the make/Tilt targets call
 
-Tiltfile                  the local dev graph: sealing key, namespace, monitoring,
-                           image builds, the chart, per-workload status, the debug buttons
+Tiltfile                  the local dev graph: namespace, monitoring, image builds, the
+                           chart, per-workload status, the debug buttons
 Makefile                  up / dev / down / up-prod / down-prod / status / help
 
 docs/
