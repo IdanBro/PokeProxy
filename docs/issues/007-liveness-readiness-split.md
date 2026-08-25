@@ -32,7 +32,7 @@ Readiness deliberately does **not** probe Redis, matching the Part 1 decision re
 
 Three small changes, no new files in `src/`: `app.state.ready = True`/`False` at the two lifespan boundaries; a `GET /ready` route mirroring the existing `/health`/`/stats` handlers; `/ready` added to `_UNLOGGED_PATHS` alongside `/health`/`/stats` since kubelet-style probes poll continuously and shouldn't bury real traffic in the access log.
 
-This is the **app-side half** of graceful shutdown only. The other half — a `preStop` hook and `terminationGracePeriodSeconds` on the Deployment, giving Kubernetes time to actually notice the flip and stop routing before `SIGTERM` — is a Part 2 manifest concern (already logged in `WORKLOG.md` Backlog).
+This is the **app-side half** of graceful shutdown only. The other half — a `preStop` hook and `terminationGracePeriodSeconds` on the Deployment, giving Kubernetes time to actually notice the flip and stop routing before `SIGTERM` — is a Part 2 manifest concern, closed there via `lifecycle.preStop.sleep` + `terminationGracePeriodSeconds` (`docs/planning/part-02-infrastructure-deployment.md`, H7).
 
 ## Verification
 
@@ -49,6 +49,6 @@ Run in WSL Ubuntu against `app/.venv` (Python 3.13).
 
 | Item | Disposition |
 |---|---|
-| Readiness flip alone doesn't guarantee zero dropped requests | The K8s-side `preStop`/grace-period wiring that makes the flip actually effective is Part 2 scope, tracked in `WORKLOG.md` |
+| Readiness flip alone doesn't guarantee zero dropped requests | The K8s-side `preStop`/grace-period wiring that makes the flip actually effective is Part 2 scope, closed there and live-verified under a rolling restart at 30 rps (2487 requests, 0 errors) — `docs/planning/part-02-infrastructure-deployment.md` |
 | No explicit `SIGTERM` handler in the app itself | Not needed — uvicorn's default signal handling already stops accepting new connections and drains in-flight ones before running the ASGI lifespan shutdown phase where this flag flips; adding a second handler would risk double-handling the signal for no benefit |
 | Readiness never reflects Redis health | Deliberate — see Decision. `/stats`/metrics remain the place cache health would surface as a first-class signal, which is Part 4 scope |

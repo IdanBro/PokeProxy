@@ -5,7 +5,7 @@
 
 ## Problem
 
-Step 6 correctly found that Helm requires the target namespace to exist before applying anything (`Error: create: failed to create: namespaces "pokeproxy" not found`), and that `--create-namespace` collides with a chart-owned `Namespace` resource on ownership metadata. The fix — removing `templates/namespace.yaml` from the chart and creating the namespace declaratively outside the Helm release — was correct. But the replacement was only ever a `kubectl create namespace | kubectl label --local | kubectl apply` command recorded in prose, in `WORKLOG.md` and the planning doc. `git grep pod-security` matched nothing but those two markdown files — no manifest, no script.
+Step 6 correctly found that Helm requires the target namespace to exist before applying anything (`Error: create: failed to create: namespaces "pokeproxy" not found`), and that `--create-namespace` collides with a chart-owned `Namespace` resource on ownership metadata. The fix — removing `templates/namespace.yaml` from the chart and creating the namespace declaratively outside the Helm release — was correct. But the replacement was only ever a `kubectl create namespace | kubectl label --local | kubectl apply` command recorded in prose, in the planning doc. `git grep pod-security` matched nothing but those two markdown files — no manifest, no script.
 
 The live `pokeproxy` namespace carries `pod-security.kubernetes.io/{enforce,audit,warn}: restricted`, which is what actually rejects privileged/root pods (verified in the Part 2 audit: a `privileged: true, runAsUser: 0` test pod was refused with `violates PodSecurity "restricted:latest"`, naming all six violations). That enforcement exists only because someone typed the right command by hand, once, on this machine.
 

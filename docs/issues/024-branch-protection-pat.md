@@ -31,7 +31,7 @@ This surfaced a second, independent bug in the job's own reasoning, caught by re
 
 ## Verification
 
-Verified live via PR #4 (`WORKLOG.md`, "Step 5 verified live"):
+Verified live via PR #4:
 
 | Check | Result |
 |---|---|

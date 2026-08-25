@@ -41,4 +41,4 @@ Deleted `values-prod.yaml` outright rather than repairing it. Part 3 step 4a int
 
 ## Tradeoffs / Remaining Risk
 
-This closes S4 for the environment that actually exists in this assignment. It does **not** prove the NetworkPolicy egress rule works against a genuine external downstream, since none is available to test against — that gap is named explicitly in `deploy/README.md` rather than papered over. Whoever stands up a real production deployment from this chart needs to add real rule URLs and widen `allow-pokeproxy-egress-to-dependencies` before disabling `mock-downstream` — recorded in `WORKLOG.md`'s Part 3 backlog.
+This closes S4 for the environment that actually exists in this assignment. It does **not** prove the NetworkPolicy egress rule works against a genuine external downstream, since none is available to test against — that gap is named explicitly in `deploy/README.md` rather than papered over. Whoever stands up a real production deployment from this chart needs to add real rule URLs and widen `allow-pokeproxy-egress-to-dependencies` before disabling `mock-downstream` — recorded in `deploy/README.md`'s "Delta from a real production" table.
