@@ -1,0 +1,16 @@
+# Debug fixture for the Tiltfile's "Restore rules.json" button (Part 5 step 5).
+# The chart's own real rules, applied via --reuse-values on top of whatever
+# is currently live (correct image tags, HMAC, etc. untouched) -- surgical
+# counterpart to values.broken-rules.yaml. Deliberately NOT `tilt trigger
+# pokeproxy-helm`: that forces a full helm uninstall + reinstall of the
+# whole release (found live -- see step 5 report), which is a much bigger
+# hammer than restoring one values key needs.
+components:
+  pokeproxy:
+    rules:
+      - reason: strong fire pokemon
+        match: ["type_one==Fire", "attack>80", "generation<4"]
+      - reason: legendary pokemon
+        match: ["legendary==true"]
+      - reason: tanky pokemon
+        match: ["defense>100", "hit_points>80"]

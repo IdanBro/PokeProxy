@@ -87,8 +87,11 @@ write_encrypted_value() {
 
 mkdir -p "$SECRETS_DIR"
 
+MINTED_THIS_RUN=false
+
 if [[ ! -f "$SEALING_KEY_MANIFEST" ]]; then
-  cat <<EOF >&2
+  if [[ "$ENVIRONMENT" != "local" ]]; then
+    cat <<EOF >&2
 No sealing key found at $SEALING_KEY_MANIFEST.
 
 This script no longer mints one for you (F-2, docs/planning/part-03-cicd-gitops.md):
@@ -102,7 +105,15 @@ Provision the key deliberately instead:
 or restore your backed-up $SEALING_KEY_MANIFEST from wherever you saved it
 when it was first provisioned.
 EOF
-  exit 1
+    exit 1
+  fi
+
+  echo "No sealing key found at $SEALING_KEY_MANIFEST"
+  echo "Minting one for 'local' (P5-1/P5-2, docs/planning/part-05-automation.md D5): unlike prod," \
+       "Helm reads deploy/envs/local/values.yaml from the working tree, not git, so a fresh key here" \
+       "is safe as long as we re-seal against it in the same run."
+  bash "$REPO_ROOT/scripts/init-sealing-key.sh" --env local >/dev/null
+  MINTED_THIS_RUN=true
 fi
 echo "Using sealing key at $SEALING_KEY_MANIFEST"
 
@@ -124,7 +135,10 @@ helm upgrade --install sealed-secrets sealed-secrets/sealed-secrets \
 kubectl --context "$KUBE_CONTEXT" rollout status \
   deployment/"$CONTROLLER_NAME" -n "$CONTROLLER_NAMESPACE" --timeout=90s >/dev/null
 
-if already_sealed "$VALUES_FILE"; then
+if [[ "$MINTED_THIS_RUN" == "true" ]]; then
+  echo "Sealing key was minted this run — re-sealing $VALUES_FILE against it regardless of what's" \
+       "already there (a freshly minted keypair cannot decrypt ciphertext sealed against any other key)"
+elif already_sealed "$VALUES_FILE"; then
   echo "$VALUES_FILE already holds a value sealed against the existing key, leaving it as-is"
   exit 0
 fi

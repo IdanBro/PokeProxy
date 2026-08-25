@@ -9,6 +9,11 @@ ports:
   - port: 8080:80
     nodeFilters:
       - loadbalancer
+registries:
+  create:
+    name: pokeproxy-registry
+    host: "0.0.0.0"
+    hostPort: "5000"
 options:
   k3d:
     wait: true
