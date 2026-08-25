@@ -10,6 +10,11 @@ configs:
 server:
   service:
     type: ClusterIP
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    # hostname defaults to global.domain (argocd.localhost); tls stays false
+    # to match server.insecure above -- no self-signed cert to trust locally
 
 dex:
   enabled: false

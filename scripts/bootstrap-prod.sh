@@ -138,6 +138,5 @@ cat <<EOF
 Done. PokeProxy is reconciled by Argo CD and reachable at $INGRESS_URL
 
 Argo CD UI:
-  kubectl --context $KUBE_CONTEXT port-forward svc/argocd-server -n $ARGOCD_NAMESPACE 8090:80
-  http://localhost:8090  (user: admin, password: ${admin_password:-<argocd-initial-admin-secret already deleted>})
+  http://argocd.localhost:8081  (user: admin, password: ${admin_password:-<argocd-initial-admin-secret already deleted>})
 EOF

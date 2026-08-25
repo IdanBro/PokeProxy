@@ -50,16 +50,16 @@ if [[ "$ENVIRONMENT" == "local" ]]; then
 elif [[ -n "${POKEPROXY_HMAC_KEY:-}" ]]; then
   HMAC_VALUE="$POKEPROXY_HMAC_KEY"
 else
+  HMAC_VALUE="$(openssl rand -base64 32)"
   cat <<EOF >&2
-POKEPROXY_HMAC_KEY is not set, and '$ENVIRONMENT' has no default.
+POKEPROXY_HMAC_KEY was not set for '$ENVIRONMENT' -- auto-generated one for this run
+(demo convenience only, not a real safeguard: nothing verifies who could have read
+this value, and it is printed once below and never stored anywhere else):
 
-The local default is a well-known value committed to this repository; sealing it
-for '$ENVIRONMENT' would put a publicly readable secret behind the signature check.
+  POKEPROXY_HMAC_KEY=$HMAC_VALUE
 
-Export a real key first:
-  export POKEPROXY_HMAC_KEY="\$(openssl rand -base64 32)"
+Save it now if anything needs to sign real traffic against this deployment.
 EOF
-  exit 1
 fi
 
 require_command() {

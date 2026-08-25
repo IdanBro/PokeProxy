@@ -57,16 +57,42 @@ Per-environment values live outside the chart, at `deploy/envs/<env>/values.yaml
 | `local` | `deploy/envs/local/values.yaml` | `.secrets/sealing-key-local.yaml` (auto-minted) | `pokeproxy` / `k3d-pokeproxy` | 8080 |
 | `prod` | `deploy/envs/prod/values.yaml` | `.secrets/sealing-key-prod.yaml` (manual — see below) | `pokeproxy-prod` / `k3d-pokeproxy-prod` | 8081 |
 
+## Exposed routes
+
+Every route below rides the **same** Traefik load balancer per environment — the single host port in the table above (8080 local, 8081 prod). There is no separate port per service; Traefik dispatches by path and/or `Host` header on that one entrypoint. Two routing styles are in play:
+
+- **Host-less (path-only)** — the Ingress carries no `host:`, so it matches on any hostname the client used. `curl http://localhost:8080/...` and `curl -H "Host: anything" http://localhost:8080/...` hit the same rule.
+- **Host-based** — the Ingress requires a specific `Host` header. `*.localhost` resolves to loopback automatically in modern browsers/OS resolvers, so no `/etc/hosts` edit is needed; `curl` needs an explicit `-H "Host: ..."` since it doesn't do that resolution-plus-header-injection on its own.
+
+| Route | Style | Domain used | Port | Env | What's there |
+|---|---|---|---|---|---|
+| `POST /stream` | host-less, `pathType: Exact` | any (e.g. `localhost`) | 8080 / 8081 | local + prod | the app itself — HMAC-signed protobuf in, JSON forwarded out. GET returns 405, unsigned POST returns 401 |
+| `/grafana/*` | host-less, path-prefix | any (e.g. `localhost`) | 8080 / 8081 | local + prod | Grafana, `admin` / `pokeproxy-dev` (fixed dev-only password — see Monitoring stack, above) |
+| `/*` | **host-based** | `argocd.localhost` | 8081 only | prod only | Argo CD UI, `admin` / the password printed at the end of `bootstrap-prod.sh`'s output (or `kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' \| base64 -d`) |
+
+**Deliberately not on any Ingress, in either environment** — port-forward is the only access path, and that's a stated security boundary, not an oversight:
+
+| What | Why kept off | How to reach it anyway |
+|---|---|---|
+| Prometheus | its query API has no auth of its own in this chart; an Ingress would put it on the open internet unauthenticated | `kubectl --context <ctx> port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090` |
+| The app's own `/metrics` | same reasoning, same precedent (`docs/issues/025`) | `kubectl --context <ctx> port-forward -n <ns> deploy/pokeproxy 8000:8000`, then `curl localhost:8000/metrics` |
+
+Tilt's own web UI (`http://localhost:10350`, local only) is a separate case — it's Tilt's built-in server, not a k3d Ingress route, so it isn't in the table above.
+
 ## GitOps (prod stand-in)
 
 There is no real production cluster for this assignment, so `prod` is a second k3d cluster on the same laptop: its own context, its own Argo CD, its own sealing key, its own port. That converts the CD half of Part 3 from described to demonstrated. Prod deliberately stays script-driven rather than moving to Tilt — Tilt is the dev inner loop, Argo CD is the delivery mechanism, and conflating them would blur exactly the distinction Part 3 exists to demonstrate.
 
 ```bash
-export POKEPROXY_HMAC_KEY="$(openssl rand -base64 32)"   # any value — see below
 make up-prod    # or: bash scripts/bootstrap-prod.sh
 ```
 
-`seal-hmac.sh --env prod` hard-fails immediately if `POKEPROXY_HMAC_KEY` isn't exported — even on a rerun where the value ends up unused because the key is already sealed. It no longer falls back to sealing the well-known local dev key for prod, so the export above is required every run, not just the first.
+`seal-hmac.sh --env prod` no longer requires `POKEPROXY_HMAC_KEY` to be exported. If it's unset — and prod's `values.yaml` actually needs (re-)sealing rather than already holding a sealed value — the script generates one itself and prints it once to stderr. **Demo convenience only, not a real safeguard**: nothing verifies who could have read that output, and the value is never stored anywhere else, so anything that needs to sign real traffic against this deployment has to be configured with whatever was printed. To seal a specific value instead (the only way to get a signing key you can actually reuse), export it yourself first:
+
+```bash
+export POKEPROXY_HMAC_KEY="$(openssl rand -base64 32)"   # any value — takes priority over auto-generation
+make up-prod
+```
 
 Idempotent otherwise, and the order matters:
 
@@ -122,7 +148,7 @@ Argo CD reads from **GitHub, not the working tree** — an uncommitted or unpush
 | `mock-downstream.enabled: true` — the E2E's delivery assertion needs a sink inside the cluster | a real downstream, with the E2E asserting against a synthetic endpoint instead, and `allow-pokeproxy-egress-to-dependencies` extended to reach it |
 | The E2E Job mounts the real HMAC signing key | a dedicated test credential — not possible today, the app validates against a single key |
 | Sealing key generated locally and gitignored | a KMS-backed or externally managed key, with the public half committed |
-| `server.insecure: true`, port-forward access | TLS termination and real SSO in front of the Argo CD server |
+| `server.insecure: true`, plain-HTTP Ingress (`http://argocd.localhost:8081`) | TLS termination and real SSO in front of the Argo CD server |
 
 ## CI promote (main only)
 
