@@ -11,4 +11,4 @@ helm upgrade --install pokeproxy "$REPO_ROOT/deploy/helm/pokeproxy" \
   --namespace pokeproxy \
   --reuse-values \
   -f "$REPO_ROOT/deploy/envs/local/values.good-rules.yaml" \
-  --atomic --timeout=3m
+  --atomic --timeout=4m

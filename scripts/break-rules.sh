@@ -11,6 +11,6 @@ helm upgrade --install pokeproxy "$REPO_ROOT/deploy/helm/pokeproxy" \
   --namespace pokeproxy \
   --reuse-values \
   -f "$REPO_ROOT/deploy/envs/local/values.broken-rules.yaml" \
-  --atomic --timeout=3m
+  --atomic --timeout=4m
 
 echo "If this line is reached, --atomic did NOT roll back -- that's unexpected, investigate."

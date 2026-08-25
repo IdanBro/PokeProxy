@@ -1,9 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: up dev down up-prod down-prod status install-tools help
-
-install-tools: ## Check for and install missing CLI tools from official sources (asks before every step)
-	bash scripts/install-tools.sh
+.PHONY: up dev down up-prod down-prod status help
 
 up: ## Zero to running, non-interactive: preflight, cluster, tilt ci
 	bash scripts/up.sh ci

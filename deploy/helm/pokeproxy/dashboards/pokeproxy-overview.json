@@ -315,7 +315,7 @@
       "id": 8,
       "type": "timeseries",
       "title": "Latency: p50 / p90 / p99, downstream p99 overlaid",
-      "description": "The 'us or them' panel -- total latency percentiles vs. downstream-only p99.",
+      "description": "The 'us or them' panel -- total latency percentiles vs. downstream-only p99. downstream p99 is filtered to result=\"success\" so a timeout/error outage (which pins its own latency at the retry deadline) doesn't distort the successful-call baseline -- see pokeproxy_downstream_requests_total for the error/timeout rate instead.",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
@@ -335,7 +335,7 @@
           "refId": "C"
         },
         {
-          "expr": "histogram_quantile(0.99, sum(rate(pokeproxy_downstream_duration_seconds_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(pokeproxy_downstream_duration_seconds_bucket{result=\"success\"}[5m])) by (le))",
           "legendFormat": "downstream p99",
           "refId": "D"
         }

@@ -19,7 +19,7 @@ spec:
   backoffLimit: 0
   # STARTUP_MAX_WAIT_SECONDS (90s, e2e_check.py) can consume most of this budget
   # on a slow-but-healthy rollout; the deadline must clear it with real margin
-  # for the checks that run after startup, not just barely exceed it (F-8).
+  # for the checks that run after startup, not just barely exceed it.
   activeDeadlineSeconds: 180
   ttlSecondsAfterFinished: 3600
   template:
