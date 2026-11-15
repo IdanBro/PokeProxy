@@ -56,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
       - name: Install kubeconform
         uses: ./.github/actions/setup-kubeconform
       - run: helm lint --strict deploy/helm/pokeproxy -f deploy/envs/local/values.yaml --set e2e.enabled=true --set e2e.image.tag=test
@@ -166,7 +166,7 @@ jobs:
           pokeproxy-digest: ${{ needs.build-pokeproxy.outputs.digest }}
           mock-downstream-digest: ${{ needs.build-mock-downstream.outputs.digest }}
           e2e-digest: ${{ needs.build-e2e.outputs.digest }}
-      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
       - name: Install kubeconform
         uses: ./.github/actions/setup-kubeconform
       - name: Validate the promoted values file before committing
